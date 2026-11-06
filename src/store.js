@@ -19,6 +19,8 @@ const Store = (() => {
     me: { pk: '', uid: null, nick: '', color: '#d8a54a', isOwner: false, canEdit: false, profileName: '' },
     dm: false,
     canWrite: null, // true | false | null (unknown)
+    server: false, // served by tools/server.js (self-hosted)
+    offline: false, // self-hosted: lost the connection, reconnecting
     relay: false, // sending writes through a writer's page
     readOnly: false,
     executorPresent: false,
@@ -104,15 +106,61 @@ const Store = (() => {
     return PALETTE[h % PALETTE.length];
   }
 
+  /* ------------------------------------------- in-memory doc mirror */
+  // Documents plus collection/doc watchers; shared by the solo and self-hosted backends
+  function mirror() {
+    const docs = new Map();
+    const watchers = new Set();
+    const colOf = (p) => p.slice(0, p.lastIndexOf('/'));
+    function notify(path) {
+      const col = colOf(path);
+      watchers.forEach((w) => {
+        if ((w.type === 'doc' && w.path === path) || (w.type === 'col' && w.path === col)) w.fire();
+      });
+    }
+    const notifyAll = () => watchers.forEach((w) => w.fire());
+    function list(col, opts) {
+      let arr = [];
+      docs.forEach((d, p) => {
+        if (colOf(p) === col) arr.push({ id: p.slice(col.length + 1), raw: d });
+      });
+      if (opts && opts.orderBy) {
+        const f = opts.orderBy;
+        const dir = opts.dir === 'desc' ? -1 : 1;
+        arr.sort((a, b) => ((a.raw[f] > b.raw[f]) - (a.raw[f] < b.raw[f])) * dir);
+      } else arr.sort((a, b) => (a.id < b.id ? -1 : 1));
+      if (opts && opts.limit) arr = arr.slice(0, opts.limit);
+      return arr;
+    }
+    function watcher(type, path, fire) {
+      const w = { type, path, dead: false, pending: false };
+      w.fire = () => {
+        if (w.pending) return;
+        w.pending = true;
+        queueMicrotask(() => {
+          w.pending = false;
+          if (!w.dead) fire();
+        });
+      };
+      watchers.add(w);
+      w.fire();
+      return () => {
+        w.dead = true;
+        watchers.delete(w);
+      };
+    }
+    return { docs, notify, notifyAll, list, watcher };
+  }
+
   /* -------------------------------------------- local stand-in backend */
   function localBackend() {
     const KEY = 'tt.local.v1';
-    const docs = new Map();
+    const M = mirror();
+    const docs = M.docs;
     try {
       const raw = localStorage.getItem(KEY);
       if (raw) Object.entries(JSON.parse(raw)).forEach(([p, d]) => docs.set(p, Object.freeze(d)));
     } catch (e) { /* ignore */ }
-    const watchers = new Set();
     let bc = null;
     try {
       bc = new BroadcastChannel('tt.local.db');
@@ -151,27 +199,20 @@ const Store = (() => {
         del: (k) => run('readwrite', (s) => s.delete(k)).catch(() => {}),
       };
     })();
-    const colOf = (p) => p.slice(0, p.lastIndexOf('/'));
-    function notify(path) {
-      const col = colOf(path);
-      watchers.forEach((w) => {
-        if ((w.type === 'doc' && w.path === path) || (w.type === 'col' && w.path === col)) w.fire();
-      });
-    }
     function put(path, data) {
       if (data === null) docs.delete(path);
       else docs.set(path, Object.freeze(clone(data)));
       if (!path.startsWith('mapchunks/')) persist();
       else if (data === null) idb.del(path);
       else idb.put(path, docs.get(path));
-      notify(path);
+      M.notify(path);
     }
     if (bc) bc.onmessage = (ev) => {
       const m = ev.data;
       if (!m || m.t !== 'w') return;
       if (m.d === null) docs.delete(m.p);
       else docs.set(m.p, Object.freeze(m.d));
-      notify(m.p);
+      M.notify(m.p);
     };
     function write(path, data) {
       put(path, data);
@@ -179,43 +220,13 @@ const Store = (() => {
         if (bc) bc.postMessage({ t: 'w', p: path, d: data === null ? null : docs.get(path) });
       } catch (e) { /* ignore */ }
     }
-    function list(col, opts) {
-      let arr = [];
-      docs.forEach((d, p) => {
-        if (colOf(p) === col) arr.push({ id: p.slice(col.length + 1), raw: d });
-      });
-      if (opts && opts.orderBy) {
-        const f = opts.orderBy;
-        const dir = opts.dir === 'desc' ? -1 : 1;
-        arr.sort((a, b) => ((a.raw[f] > b.raw[f]) - (a.raw[f] < b.raw[f])) * dir);
-      } else arr.sort((a, b) => (a.id < b.id ? -1 : 1));
-      if (opts && opts.limit) arr = arr.slice(0, opts.limit);
-      return arr;
-    }
-    function watcher(type, path, fire) {
-      const w = { type, path, dead: false, pending: false };
-      w.fire = () => {
-        if (w.pending) return;
-        w.pending = true;
-        queueMicrotask(() => {
-          w.pending = false;
-          if (!w.dead) fire();
-        });
-      };
-      watchers.add(w);
-      w.fire();
-      return () => {
-        w.dead = true;
-        watchers.delete(w);
-      };
-    }
     return {
       kind: 'local',
       watchCol(col, opts, cb) {
-        return watcher('col', col, () => cb(list(col, opts), { fromCache: false }));
+        return M.watcher('col', col, () => cb(M.list(col, opts), { fromCache: false }));
       },
       watchDoc(path, cb) {
-        return watcher('doc', path, () => cb(docs.has(path) ? docs.get(path) : null, { fromCache: false }));
+        return M.watcher('doc', path, () => cb(docs.has(path) ? docs.get(path) : null, { fromCache: false }));
       },
       async set(path, data) {
         write(path, data);
@@ -236,6 +247,176 @@ const Store = (() => {
         docs.set(path, Object.freeze(d));
         return docs.get(path);
       },
+    };
+  }
+
+  /* ------------------------------------ self-hosted server (server.js) */
+  // One computer runs tools/server.js; everyone opens its address. Live updates
+  // arrive over server-sent events, writes and presence go up as small POSTs.
+  async function findServer() {
+    const get = async (q) => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 4000);
+      try {
+        const r = await fetch('api/hello' + q, { cache: 'no-store', signal: ctl.signal });
+        const j = await r.json().catch(() => null);
+        return j && j.tavern ? { status: r.status, j } : null;
+      } catch (e) {
+        return null;
+      } finally {
+        clearTimeout(t);
+      }
+    };
+    if (!/^https?:$/.test(location.protocol)) return null;
+    let key = LS.get('tt.key', '') || '';
+    let r = await get('?key=' + encodeURIComponent(key));
+    if (!r) return null;
+    while (r && r.status === 401) {
+      const typed = window.prompt(key ? 'That password didn’t work. Table password:' : 'Table password:');
+      if (typed == null) return { refused: true };
+      key = typed.trim();
+      r = await get('?key=' + encodeURIComponent(key));
+    }
+    if (!r) return null;
+    LS.set('tt.key', key);
+    return { key };
+  }
+  function serverConn(key) {
+    const q = '?key=' + encodeURIComponent(key || '');
+    const conn = { peer: null, owner: false, ready: false, live: false, onSnap: null, onDoc: null, onPeers: null, onHello: null, onState: null };
+    let first = null;
+    conn.firstHello = new Promise((res) => (first = res));
+    const es = new EventSource('api/events' + q);
+    const on = (ev, fn) => es.addEventListener(ev, (e) => {
+      let m = null;
+      try {
+        m = JSON.parse(e.data);
+      } catch (er) {
+        return;
+      }
+      fn(m);
+    });
+    on('hello', (m) => {
+      conn.peer = m.peer;
+      conn.owner = !!m.owner;
+      conn.live = true;
+      first(m);
+      if (conn.onHello) conn.onHello(m);
+      if (conn.onState) conn.onState(true);
+    });
+    on('snap', (m) => {
+      conn.ready = true;
+      if (conn.onSnap) conn.onSnap(m.docs || {});
+    });
+    on('doc', (m) => conn.onDoc && conn.onDoc(m));
+    on('peers', (m) => conn.onPeers && conn.onPeers(m.peers || []));
+    es.onerror = () => {
+      if (!conn.live) return;
+      conn.live = false;
+      if (conn.onState) conn.onState(false);
+    };
+    conn.post = async (url, body) => {
+      let r;
+      try {
+        r = await fetch(url + q, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      } catch (e) {
+        throw { code: 'unavailable', message: 'server unreachable' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw { code: j.code || (r.status === 401 ? 'revoked' : r.status === 413 ? 'quota_exceeded' : 'unavailable'), message: j.message || 'HTTP ' + r.status };
+      return j;
+    };
+    conn.getJson = async (url) => {
+      let r;
+      try {
+        r = await fetch(url + (url.includes('?') ? '&' : '?') + q.slice(1), { cache: 'no-store' });
+      } catch (e) {
+        throw { code: 'unavailable' };
+      }
+      if (!r.ok) throw { code: 'unavailable', message: 'HTTP ' + r.status };
+      return r.json();
+    };
+    return conn;
+  }
+  function serverBackend(conn) {
+    const M = mirror();
+    const docs = M.docs;
+    conn.onSnap = (all) => {
+      docs.clear();
+      for (const p in all) docs.set(p, Object.freeze(all[p]));
+      M.notifyAll();
+    };
+    conn.onDoc = (m) => {
+      if (!m || typeof m.p !== 'string') return;
+      if (m.d === null || m.d === undefined) docs.delete(m.p);
+      else docs.set(m.p, Object.freeze(m.d));
+      M.notify(m.p);
+    };
+    // until the first snapshot arrives, listeners hear nothing (so nothing counts as loaded)
+    const when = (fn) => () => conn.ready && fn();
+    return {
+      kind: 'server',
+      watchCol(col, opts, cb) {
+        return M.watcher('col', col, when(() => cb(M.list(col, opts), { fromCache: false })));
+      },
+      watchDoc(path, cb) {
+        return M.watcher('doc', path, when(() => cb(docs.has(path) ? docs.get(path) : null, { fromCache: false })));
+      },
+      set: (path, data) => conn.post('api/write', { t: 'set', p: path, d: data }),
+      upd: (path, patch) => conn.post('api/write', { t: 'upd', p: path, d: patch }),
+      del: (path) => conn.post('api/write', { t: 'del', p: path }),
+      async get(path) {
+        if (docs.has(path)) return docs.get(path);
+        const j = await conn.getJson('api/doc?p=' + encodeURIComponent(path));
+        return j && j.d ? j.d : null;
+      },
+    };
+  }
+  function serverRoom(conn) {
+    const mine = {};
+    let peers = Object.freeze([]);
+    const fns = new Set();
+    conn.onPeers = (list) => {
+      peers = Object.freeze(list.map((x) => {
+        const me = x.peer === conn.peer;
+        return Object.freeze({ peer: x.peer, by: null, isMe: me, sameTab: me, kind: 'viewer', guest: false, presence: Object.freeze(x.presence || {}), updatedAt: x.t || 0 });
+      }));
+      fns.forEach((fn) => fn({ peers, joined: [], left: [], updated: [] }));
+    };
+    // drags send many updates: batch them, at most one request per 60 ms
+    let pending = null;
+    let timer = 0;
+    function flush() {
+      timer = 0;
+      if (!pending || !conn.peer) return;
+      const patch = pending;
+      pending = null;
+      conn.post('api/presence', { peer: conn.peer, patch }).catch(() => {});
+    }
+    conn.onHello = () => {
+      // a reconnect gives a new peer id: send everything again
+      pending = Object.assign({}, mine);
+      flush();
+    };
+    return {
+      local: false,
+      async presence(patch) {
+        for (const k in patch) {
+          if (patch[k] === null) delete mine[k];
+          else mine[k] = patch[k];
+        }
+        pending = Object.assign(pending || {}, patch);
+        if (!timer) timer = setTimeout(flush, 60);
+      },
+      peers: () => peers,
+      onPeers(fn) {
+        fns.add(fn);
+        queueMicrotask(() => fn({ peers, joined: [], left: [], updated: [] }));
+        return () => fns.delete(fn);
+      },
+      async emit() { /* the table uses presence only */ },
+      on: () => () => {},
+      connected: () => conn.live,
     };
   }
 
@@ -1010,7 +1191,23 @@ const Store = (() => {
     try {
       me = user ? await user.me() : null;
     } catch (e) { /* none */ }
-    if (db) {
+    // outside claude.ai: is this page served by a Tavern Table server (tools/server.js)?
+    const found = !cl && !opts.forceLocal ? await findServer() : null;
+    if (found && found.refused) toastWarn('No password, so this is solo mode on this device only. Reload to try again.');
+    if (found && !found.refused) {
+      const conn = serverConn(found.key);
+      await Promise.race([conn.firstHello, sleep(6000)]);
+      conn.onState = (live) => {
+        S.offline = !live;
+        emit('me');
+      };
+      S.mode = 'remote';
+      S.server = true;
+      S.backend = serverBackend(conn);
+      S.room = serverRoom(conn);
+      // the computer running the server is the table's owner (DM by default)
+      me = { id: null, isOwner: conn.owner, canEdit: true, name: '' };
+    } else if (db) {
       S.mode = 'remote';
       S.backend = remoteBackend(db);
       S.room = room;
@@ -1039,7 +1236,8 @@ const Store = (() => {
     const role = LS.get('tt.role', null);
     S.dm = role ? role === 'dm' : S.me.isOwner || S.mode === 'local';
     S.myChar = LS.get('tt.char', null);
-    if (S.mode === 'remote') {
+    if (S.server) S.canWrite = true; // everyone with the table password can play
+    else if (S.mode === 'remote') {
       let cw = null;
       try {
         cw = user ? await user.can('data.write') : null;

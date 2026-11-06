@@ -335,11 +335,12 @@ const UI = (() => {
     const sc = Store.activeScene();
     $('#sceneName').textContent = sc.name || 'Blank grid';
     const conn = $('#conn');
-    conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded ? 'live' : '');
-    conn.title = S.mode === 'local' ? 'Solo mode: this device only' : S.loaded ? 'Live' : 'Connecting…';
+    conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline ? 'live' : '');
+    conn.title = S.mode === 'local' ? 'Solo mode: this device only' : S.offline ? 'Reconnecting…' : S.loaded ? 'Live' : 'Connecting…';
     const pill = $('#statusPill');
     let st = '';
     if (S.mode === 'local') st = 'Solo · this device';
+    else if (S.offline) st = 'Reconnecting…';
     else if (S.readOnly) st = 'View only';
     else if (S.stale && !S.loaded) st = 'Can’t reach the table';
     else if (S.relay) st = 'Limited access';
@@ -2585,9 +2586,12 @@ const UI = (() => {
               const ch = pr.ch && S.chars.get(pr.ch);
               return html`<div class="row"><span class="disc sm" style="--c:${safeColor(pr.col) || '#888'}">${initials(pr.nm || '?')}</span><span class="main"><span class="title" style="display:block">${pr.nm || (p.isMe ? 'You' : 'Someone')}${p.isMe ? ' (you)' : ''}</span><span class="sub" style="display:block">${pr.dm ? 'DM' : 'Player'}${ch ? ' · ' + ch.name : ''}${pr.w === 1 ? '' : p.isMe && S.relay ? ' · limited access' : ''}${p.guest ? ' · guest' : ''}</span></span></div>`;
             })}</div>` : html`<p class="hint">${S.mode === 'local' ? 'Solo mode: open this table from its shared link to see friends here.' : 'Only you for now.'}</p>`}</div>
-          <div class="card"><div class="card-title"><h3>Invite friends</h3></div>
+          ${S.server ? html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
+            <p class="prose">Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.</p>
+            <input type="text" readonly value="${location.origin + location.pathname}" aria-label="Table address" onfocus="this.select()">
+            <p class="hint">${S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
             <p class="prose">Share this page from its share menu with each friend’s email and give them edit access (Editor), so they can move tokens and roll. Keep the public link off, since edit access for invited friends only holds while the page isn’t shared by link. Each friend signs in with their own Claude account.</p>
-            <p class="hint">Friends with view-only access can still watch the table live. While your page is open, their own moves and rolls are passed through it when possible.</p></div>
+            <p class="hint">Friends with view-only access can still watch the table live. While your page is open, their own moves and rolls are passed through it when possible.</p></div>`}
           ${S.dm ? html`<div class="card"><div class="card-title"><h3>DM tools</h3></div><div class="btn-row"><button type="button" class="btn btn-sm" data-act="scenes">${icon('map')} Scenes and maps</button><button type="button" class="btn btn-danger btn-sm" data-act="clear-log">Clear dice log</button></div></div>` : ''}
           <div class="card"><div class="card-title"><h3>About the rules</h3></div><p class="hint">This work includes material taken from the System Reference Document 5.1 (“SRD 5.1”) by Wizards of the Coast LLC and available at <a href="https://dnd.wizards.com/resources/systems-reference-document" target="_blank" rel="noopener">dnd.wizards.com</a>. The SRD 5.1 is licensed under the <a href="https://creativecommons.org/licenses/by/4.0/legalcode" target="_blank" rel="noopener">Creative Commons Attribution 4.0 International License</a>. Encounter difficulty uses the XP thresholds and multipliers from the 5e encounter-building rules.</p></div>`;
       },

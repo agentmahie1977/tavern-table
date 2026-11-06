@@ -22,6 +22,10 @@ ratings, initiative tracking, and a shared dice log.
   - `style.css`, `body.html` — styles and markup shell.
 - `data/` — SRD 5.1 content compacted to JSON (`rules`, `spells`, `monsters`, `features`),
   fetched at runtime from `data/*.json`.
+- `server.js` — self-hosted mode, plain Node.js with no dependencies: serves the page and `data/`,
+  keeps the shared documents in `table-data/` (map pieces as files), pushes changes and presence over
+  server-sent events. `store.js` detects it (`api/hello`) when not inside claude.ai, so one build runs
+  in three modes: claude.ai capabilities, self-hosted server, or solo. See `HOSTING.md`.
 - `index.html` — built output (page content only; claude.ai adds the doctype/head skeleton).
 - `tools/`
   - `build.py` — concatenates `src/*` into `index.html`.
@@ -60,5 +64,4 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 - Custom content editor (homebrew monsters/spells) stored in the shared db.
 - Optional SRD 5.2 (2024 rules) dataset.
 - Fog of war.
-- Running outside claude.ai with real multiplayer needs a backend replacing `remoteBackend`
-  and the room in `store.js` (e.g. Firebase/Supabase realtime).
+- Self-hosted mode has one shared password and no per-person roles; anyone with it can edit.
