@@ -176,6 +176,9 @@ const Board = (() => {
     scene = sc;
     sceneId = sc.id;
     grid = Object.assign({ size: 70, ox: 0, oy: 0, show: true, color: '#e9e2cf', alpha: 0.16 }, sc.grid || {}, gridPreview || {});
+    grid.size = Core.clamp(Number(grid.size) || 70, 4, 1000);
+    grid.ox = Number(grid.ox) || 0;
+    grid.oy = Number(grid.oy) || 0;
     grid.size = Math.max(8, Number(grid.size) || 70);
     [W, H] = sceneDims(sc, grid);
     world.style.width = W + 'px';
@@ -506,7 +509,10 @@ const Board = (() => {
     const kind = t.shape === 'circle' ? 'radius' : t.shape === 'cube' ? 'cube' : t.shape === 'cone' ? 'cone' : 'line';
     return `${t.label ? t.label + ' · ' : ''}${t.size}-ft ${kind}`;
   }
-  function tplSvg(t, opts) {
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  function tplSvg(t0, opts) {
+    // shared docs and other people's presence: numbers only, since they go into markup
+    const t = Object.assign({}, t0, { x: num(t0.x, 0), y: num(t0.y, 0), size: Core.clamp(num(t0.size, 5), 0, 2000), width: num(t0.width, 5), angle: num(t0.angle, 0) });
     const s = grid.size;
     const col = safeColor(t.color) || '#d9a647';
     const cells = Core.templateCells(t, grid);

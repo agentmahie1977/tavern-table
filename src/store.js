@@ -130,6 +130,27 @@ const Store = (() => {
         } catch (e) { /* quota */ }
       }, 250);
     }
+    // Map pieces are too big for localStorage, so they live in IndexedDB (best effort)
+    const idb = (() => {
+      let dbp = null;
+      const open = () => dbp || (dbp = new Promise((res, rej) => {
+        const rq = indexedDB.open('tt.local.maps', 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore('chunks');
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+      }));
+      const run = (mode, fn) => open().then((db) => new Promise((res, rej) => {
+        const tx = db.transaction('chunks', mode);
+        const rq = fn(tx.objectStore('chunks'));
+        tx.oncomplete = () => res(rq.result);
+        tx.onerror = tx.onabort = () => rej(tx.error);
+      }));
+      return {
+        get: (k) => run('readonly', (s) => s.get(k)).catch(() => undefined),
+        put: (k, v) => run('readwrite', (s) => s.put(v, k)).catch(() => {}),
+        del: (k) => run('readwrite', (s) => s.delete(k)).catch(() => {}),
+      };
+    })();
     const colOf = (p) => p.slice(0, p.lastIndexOf('/'));
     function notify(path) {
       const col = colOf(path);
@@ -141,6 +162,8 @@ const Store = (() => {
       if (data === null) docs.delete(path);
       else docs.set(path, Object.freeze(clone(data)));
       if (!path.startsWith('mapchunks/')) persist();
+      else if (data === null) idb.del(path);
+      else idb.put(path, docs.get(path));
       notify(path);
     }
     if (bc) bc.onmessage = (ev) => {
@@ -206,7 +229,12 @@ const Store = (() => {
         write(path, null);
       },
       async get(path) {
-        return docs.has(path) ? docs.get(path) : null;
+        if (docs.has(path)) return docs.get(path);
+        if (!path.startsWith('mapchunks/')) return null;
+        const d = await idb.get(path);
+        if (!d) return null;
+        docs.set(path, Object.freeze(d));
+        return docs.get(path);
       },
     };
   }
@@ -325,8 +353,10 @@ const Store = (() => {
     if (!prev || next.t === 'del' || next.t === 'set') return next;
     if (prev.t === 'set') return { t: 'set', d: deepMerge(prev.d, next.d) };
     if (prev.t === 'upd') return { t: 'upd', d: deepMerge(prev.d, next.d) };
-    return { t: 'set', d: next.d };
+    return prev; // a patch after a delete must not bring back a half-empty document
   }
+  // Only these documents may be created by a patch (game/state starts out missing)
+  const UPSERT_PATH = /^game\//;
   function enqueue(path, op) {
     if (S.readOnly) {
       toastWarn('This view is read-only.');
@@ -382,6 +412,10 @@ const Store = (() => {
         try {
           exists = !!(await S.backend.get(path));
         } catch (e3) { /* unknown */ }
+        if (exists === false && !UPSERT_PATH.test(path)) {
+          // patching something that was deleted (a drop landing after someone removed the token): nothing to do
+          return false;
+        }
         if (exists === false) {
           try {
             await exec(path, { t: 'set', d: op.d });
@@ -689,7 +723,8 @@ const Store = (() => {
     if (!scene || !scene.mapId) return null;
     const have = S.maps.get(scene.mapId);
     if (have && have.status !== 'error') return have;
-    const entry = { status: 'loading', url: null, progress: 0 };
+    // carry the retry flag over, or the board's one automatic retry repeats forever
+    const entry = { status: 'loading', url: null, progress: 0, retried: !!(have && have.retried) };
     S.maps.set(scene.mapId, entry);
     emit('maps');
     try {
@@ -876,7 +911,7 @@ const Store = (() => {
     async deleteScene(id) {
       const sc = S.scenes.get(id);
       if (!sc) return;
-      for (const t of S.tokens.values()) if (t.scene === id) W.del('tokens/' + t.id);
+      for (const t of S.tokens.values()) if (t.scene === id) Act.removeToken(t.id); // also drops their initiative entries
       for (const t of S.tpls.values()) if (t.scene === id) W.del('templates/' + t.id);
       if (sc.mapId) for (let i = 0; i < (sc.chunks || 0); i++) W.del('mapchunks/' + sc.mapId + '_' + i);
       await W.del('scenes/' + id);
