@@ -6,6 +6,12 @@ dice log. Works on phones and computers.
 
 ## Play it
 
+**Online, from a link (easiest):** open **https://agentmahie1977.github.io/tavern-table/**,
+then People and settings (top right) → **Host this table online**, and send friends the
+invite link. Your browser is the table: keep that tab open while you play. Friends need
+nothing but the link. (Uses the free PeerJS lobby to connect browsers; doesn't work when
+only Iran's national network is up. Use your own server below for that.)
+
 **On your own computer or server (no accounts, works without the internet):**
 
 1. Install [Node.js](https://nodejs.org) (LTS).

@@ -21,6 +21,7 @@ const Store = (() => {
     canWrite: null, // true | false | null (unknown)
     server: false, // served by tools/server.js (self-hosted)
     offline: false, // self-hosted: lost the connection, reconnecting
+    p2p: null, // online play: { role: 'host' | 'guest', code, status }
     relay: false, // sending writes through a writer's page
     readOnly: false,
     executorPresent: false,
@@ -167,17 +168,23 @@ const Store = (() => {
       bc = new BroadcastChannel('tt.local.db');
     } catch (e) { /* no channel */ }
     let saveT = 0;
+    // save right after the current batch of changes. Not on a timer: browsers slow timers down in
+    // background tabs, and a DM's hosting tab often is one, so a reload could lose the last changes.
     function persist() {
-      clearTimeout(saveT);
-      saveT = setTimeout(() => {
+      if (saveT) return;
+      saveT = 1;
+      queueMicrotask(() => {
+        saveT = 0;
         try {
           const o = {};
           docs.forEach((d, p) => {
             if (!p.startsWith('mapchunks/')) o[p] = d;
           });
           localStorage.setItem(KEY, JSON.stringify(o));
-        } catch (e) { /* quota */ }
-      }, 250);
+        } catch (e) {
+          console.warn('saving the table on this device failed', e);
+        }
+      });
     }
     // Map pieces are too big for localStorage, so they live in IndexedDB (best effort)
     const idb = (() => {
@@ -223,6 +230,14 @@ const Store = (() => {
     }
     return {
       kind: 'local',
+      all() {
+        const o = {};
+        docs.forEach((d, p) => {
+          if (!p.startsWith('mapchunks/')) o[p] = d;
+        });
+        return o;
+      },
+      peek: (p) => (docs.has(p) ? docs.get(p) : null),
       watchCol(col, opts, cb) {
         return M.watcher('col', col, () => cb(M.list(col, opts), { fromCache: false }));
       },
@@ -419,6 +434,256 @@ const Store = (() => {
       on: () => () => {},
       connected: () => conn.live,
     };
+  }
+
+  /* ----------------------------- online play: the DM's browser is the host */
+  // The host runs a hub over its own saved table (the same storage as solo mode).
+  // Friends connect peer-to-peer (PeerJS) with the room code from the join link.
+  // Both sides reuse serverBackend/serverRoom through a "conn" with the same shape.
+  const HUB_PATH = /^[a-z]{1,20}\/[A-Za-z0-9_~:@+-][A-Za-z0-9_.~:@+-]{0,119}$/;
+  function makeHub(B) {
+    const clients = new Map(); // id -> { send, presence, t }
+    let peersT = 0;
+    const peersSoon = () => {
+      if (peersT) return;
+      peersT = setTimeout(() => {
+        peersT = 0;
+        const peers = [...clients].map(([peer, c]) => ({ peer, presence: c.presence, t: c.t }));
+        clients.forEach((c) => c.send({ t: 'peers', peers }));
+      }, 40);
+    };
+    const broadcast = (m) => clients.forEach((c) => c.send(m));
+    return {
+      size: () => clients.size,
+      join(id, send, owner) {
+        if (clients.size >= 30 && !owner) return false;
+        clients.set(id, { send, presence: {}, t: Date.now() });
+        send({ t: 'hello', peer: id, owner: !!owner });
+        send({ t: 'snap', docs: B.all() });
+        peersSoon();
+        return true;
+      },
+      leave(id) {
+        if (clients.delete(id)) peersSoon();
+      },
+      // everything here comes from other people's browsers: check it all
+      async request(id, m) {
+        const c = clients.get(id);
+        if (!c || !m || typeof m !== 'object') return { code: 'invalid_argument' };
+        if (m.op === 'write') {
+          const p = m.p;
+          if (typeof p !== 'string' || !HUB_PATH.test(p) || !['set', 'upd', 'del'].includes(m.t)) return { code: 'invalid_argument' };
+          if (m.t !== 'del' && (!isObj(m.d) || sizeOf(m.d) > 300000)) return { code: 'invalid_argument' };
+          try {
+            if (m.t === 'set') await B.set(p, m.d);
+            else if (m.t === 'upd') await B.upd(p, m.d);
+            else await B.del(p);
+          } catch (e) {
+            return { code: (e && e.code) || 'unavailable' };
+          }
+          if (!p.startsWith('mapchunks/')) broadcast({ t: 'doc', p, d: m.t === 'del' ? null : B.peek(p) });
+          return { ok: true };
+        }
+        if (m.op === 'presence') {
+          if (!isObj(m.patch)) return { code: 'invalid_argument' };
+          const next = Object.assign({}, c.presence);
+          for (const k in m.patch) {
+            if (m.patch[k] === null) delete next[k];
+            else next[k] = m.patch[k];
+          }
+          if (sizeOf(next) > 6000) return { code: 'invalid_argument' };
+          c.presence = next;
+          c.t = Date.now();
+          peersSoon();
+          return { ok: true };
+        }
+        if (m.op === 'get') {
+          if (typeof m.p !== 'string' || !HUB_PATH.test(m.p)) return { code: 'invalid_argument' };
+          return { ok: true, d: await B.get(m.p) };
+        }
+        return { code: 'invalid_argument' };
+      },
+    };
+  }
+  // messages from the hub, the same for the host's own screen and a friend's
+  function connDispatch(conn, m, first) {
+    if (!m || typeof m !== 'object') return;
+    if (m.t === 'hello') {
+      conn.peer = m.peer;
+      conn.owner = !!m.owner;
+      conn.live = true;
+      first();
+      if (conn.onHello) conn.onHello(m);
+      if (conn.onState) conn.onState(true);
+    } else if (m.t === 'snap') {
+      conn.ready = true;
+      if (conn.onSnap) conn.onSnap(m.docs || {});
+    } else if (m.t === 'doc') {
+      if (conn.onDoc) conn.onDoc(m);
+    } else if (m.t === 'peers') {
+      if (conn.onPeers) conn.onPeers(Array.isArray(m.peers) ? m.peers : []);
+    }
+  }
+  function newConn() {
+    const conn = { peer: null, owner: false, ready: false, live: false, onSnap: null, onDoc: null, onPeers: null, onHello: null, onState: null };
+    let first = null;
+    conn.firstHello = new Promise((res) => (first = res));
+    return [conn, () => first()];
+  }
+  const asHubRequest = (url, body) => (url === 'api/write' ? Object.assign({ op: 'write' }, body) : url === 'api/presence' ? { op: 'presence', patch: body && body.patch } : { op: 'none' });
+  const docParam = (url) => new URLSearchParams(String(url).split('?')[1] || '').get('p');
+  // the host's own screen talks to the hub directly
+  function loopbackConn(hub) {
+    const [conn, first] = newConn();
+    hub.join('host', (m) => queueMicrotask(() => connDispatch(conn, m, first)), true);
+    const ask = async (m) => {
+      const r = await hub.request('host', m);
+      if (r.code) throw { code: r.code };
+      return r;
+    };
+    conn.post = (url, body) => ask(asHubRequest(url, body));
+    conn.getJson = async (url) => ({ d: (await ask({ op: 'get', p: docParam(url) })).d });
+    return conn;
+  }
+  // PeerJS ships with the app (vendor/); a custom broker can be named in the address (?broker=host:port/path)
+  let peerLib = null;
+  function loadPeerJs() {
+    if (!peerLib) peerLib = new Promise((res, rej) => {
+      if (window.Peer) return res(window.Peer);
+      const s = document.createElement('script');
+      s.src = 'vendor/peerjs.min.js';
+      s.onload = () => (window.Peer ? res(window.Peer) : rej(new Error('PeerJS did not load')));
+      s.onerror = () => rej(new Error('PeerJS did not load'));
+      document.head.appendChild(s);
+    });
+    return peerLib;
+  }
+  function peerConfig() {
+    const q = new URLSearchParams(location.search);
+    const cfg = { debug: 0 };
+    const m = /^([A-Za-z0-9.-]+)(?::(\d+))?(\/[A-Za-z0-9_\/-]*)?$/.exec(q.get('broker') || '');
+    if (m) {
+      cfg.host = m[1];
+      cfg.port = Number(m[2] || 443);
+      cfg.path = m[3] || '/';
+      cfg.secure = q.get('broker_secure') !== '0';
+    }
+    if (q.get('ice') === 'none') cfg.config = { iceServers: [] };
+    return cfg;
+  }
+  const ROOM_RE = /^tt-[a-z0-9]{8,40}$/;
+  function joinCodeFromUrl() {
+    const m = /(?:^|[#&])join=([a-z0-9-]{8,48})/.exec(location.hash || '');
+    return m && ROOM_RE.test(m[1]) ? m[1] : null;
+  }
+  async function peerGuestConn(code, onTrouble) {
+    const [conn, first] = newConn();
+    const Peer = await loadPeerJs();
+    const peer = new Peer(undefined, peerConfig());
+    let dc = null;
+    let seq = 0;
+    let retry = 0;
+    const waiting = new Map();
+    const lost = () => {
+      waiting.forEach((w) => w.reject({ code: 'unavailable' }));
+      waiting.clear();
+      if (conn.live) {
+        conn.live = false;
+        if (conn.onState) conn.onState(false);
+      }
+      clearTimeout(retry);
+      retry = setTimeout(connect, 3000);
+    };
+    function connect() {
+      if (peer.destroyed) return;
+      if (peer.disconnected) {
+        peer.reconnect();
+        return;
+      }
+      if (dc && dc.open) return;
+      dc = peer.connect(code, { reliable: true });
+      dc.on('data', (m) => {
+        if (m && m.t === 'res' && waiting.has(m.id)) {
+          const w = waiting.get(m.id);
+          waiting.delete(m.id);
+          if (m.code) w.reject({ code: m.code });
+          else w.resolve(m);
+        } else connDispatch(conn, m, first);
+      });
+      dc.on('close', lost);
+      dc.on('error', lost);
+    }
+    peer.on('open', connect);
+    peer.on('disconnected', () => setTimeout(() => !peer.destroyed && peer.reconnect(), 2000));
+    peer.on('error', (e) => {
+      if (onTrouble) onTrouble(e && e.type);
+      if (e && (e.type === 'peer-unavailable' || e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')) lost();
+    });
+    const ask = (m) => new Promise((resolve, reject) => {
+      if (!dc || !dc.open) return reject({ code: 'unavailable' });
+      const id = ++seq;
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject({ code: 'unavailable' });
+      }, 20000);
+      waiting.set(id, { resolve: (v) => (clearTimeout(timer), resolve(v)), reject: (v) => (clearTimeout(timer), reject(v)) });
+      try {
+        dc.send({ t: 'req', id, q: m }); // the request rides in q: a write has its own t (set/upd/del)
+      } catch (e) {
+        waiting.delete(id);
+        clearTimeout(timer);
+        reject({ code: 'unavailable' });
+      }
+    });
+    conn.post = (url, body) => ask(asHubRequest(url, body));
+    conn.getJson = async (url) => ({ d: (await ask({ op: 'get', p: docParam(url) })).d });
+    return conn;
+  }
+  // the host listens for friends; the room code stays the same across reloads
+  async function peerHost(hub, code, onStatus) {
+    const Peer = await loadPeerJs();
+    let peer = null;
+    let tries = 0;
+    const open = () => {
+      peer = new Peer(code, peerConfig());
+      peer.on('open', () => {
+        tries = 0;
+        onStatus('online');
+      });
+      peer.on('connection', (dc) => {
+        const cid = 'g' + uid('').slice(-10);
+        const send = (m) => {
+          try {
+            if (dc.open) dc.send(m);
+          } catch (e) { /* gone */ }
+        };
+        dc.on('open', () => {
+          if (!hub.join(cid, send, false)) dc.close();
+        });
+        dc.on('data', async (m) => {
+          if (!m || m.t !== 'req' || !m.q) return;
+          const r = await hub.request(cid, m.q);
+          send(Object.assign({ t: 'res', id: m.id }, r));
+        });
+        dc.on('close', () => hub.leave(cid));
+        dc.on('error', () => hub.leave(cid));
+      });
+      peer.on('disconnected', () => {
+        onStatus('reconnecting');
+        setTimeout(() => !peer.destroyed && peer.reconnect(), 2000);
+      });
+      peer.on('error', (e) => {
+        const t = e && e.type;
+        if (t === 'unavailable-id') {
+          // after a reload the broker can hold the old code for a few seconds
+          peer.destroy();
+          onStatus(tries > 6 ? 'taken' : 'starting');
+          if (tries++ <= 6) setTimeout(open, 2500);
+          else setTimeout(open, 15000);
+        } else if (t === 'network' || t === 'server-error' || t === 'socket-error' || t === 'browser-incompatible') onStatus(t === 'browser-incompatible' ? 'unsupported' : 'offline');
+      });
+    };
+    open();
   }
 
   /* ------------------------------------------------- db-backed backend */
@@ -1215,6 +1480,58 @@ const Store = (() => {
       S.room = serverRoom(conn);
       // the computer running the server is the table's owner (DM by default)
       me = { id: null, isOwner: conn.owner, canEdit: true, name: '' };
+    } else if (!cl && !opts.forceLocal && joinCodeFromUrl()) {
+      // a friend opened a join link: play at the host's table
+      const code = joinCodeFromUrl();
+      S.p2p = { role: 'guest', code, trouble: null };
+      let conn = null;
+      try {
+        conn = await peerGuestConn(code, (t) => {
+          S.p2p.trouble = t;
+          emit('me');
+        });
+      } catch (e) {
+        toastWarn('Online play couldn’t start in this browser. Try another browser, or reload.');
+      }
+      if (conn) {
+        S.mode = 'remote';
+        S.backend = serverBackend(conn);
+        S.room = serverRoom(conn);
+        conn.onState = (live) => {
+          S.offline = !live;
+          emit('me');
+        };
+        await Promise.race([conn.firstHello, sleep(12000)]);
+        S.offline = !conn.live;
+        me = { id: null, isOwner: false, canEdit: true, name: '' };
+      } else {
+        S.p2p = null;
+        S.mode = 'local';
+        S.backend = localBackend();
+        S.room = localRoom();
+      }
+    } else if (!cl && !opts.forceLocal && LS.get('tt.hosting', false)) {
+      // this browser hosts the table online: its saved table is the one everyone plays on
+      const hub = makeHub(localBackend());
+      const conn = loopbackConn(hub);
+      S.mode = 'remote';
+      S.backend = serverBackend(conn);
+      S.room = serverRoom(conn);
+      let code = LS.get('tt.room', null);
+      if (!code || !ROOM_RE.test(code)) {
+        code = 'tt-' + uid('').toLowerCase();
+        LS.set('tt.room', code);
+      }
+      S.p2p = { role: 'host', code, status: 'starting' };
+      peerHost(hub, code, (st) => {
+        S.p2p.status = st;
+        emit('me');
+      }).catch(() => {
+        S.p2p.status = 'unsupported';
+        emit('me');
+      });
+      await conn.firstHello;
+      me = { id: null, isOwner: true, canEdit: true, name: '' };
     } else if (db) {
       S.mode = 'remote';
       S.backend = remoteBackend(db);
@@ -1244,7 +1561,7 @@ const Store = (() => {
     const role = LS.get('tt.role', null);
     S.dm = role ? role === 'dm' : S.me.isOwner || S.mode === 'local';
     S.myChar = LS.get('tt.char', null);
-    if (S.server) S.canWrite = true; // everyone with the table password can play
+    if (S.server || S.p2p) S.canWrite = true; // everyone at a self-hosted or online table can play
     else if (S.mode === 'remote') {
       let cw = null;
       try {
@@ -1303,6 +1620,21 @@ const Store = (() => {
       pushPresence({ col: c });
       emit('me');
     },
+    // online play (GitHub Pages and other plain hosting): start or stop hosting this table
+    startHosting() {
+      LS.set('tt.hosting', true);
+      location.reload();
+    },
+    stopHosting() {
+      LS.set('tt.hosting', false);
+      location.reload();
+    },
+    leaveOnline() {
+      location.hash = '';
+      location.reload();
+    },
+    // keeps ?broker=… so friends use the same lobby as the host
+    inviteLink: () => (S.p2p ? location.origin + location.pathname + location.search + '#join=' + S.p2p.code : ''),
     setRole(dm) {
       S.dm = !!dm;
       LS.set('tt.role', dm ? 'dm' : 'player');

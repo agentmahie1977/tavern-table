@@ -26,6 +26,10 @@ ratings, initiative tracking, and a shared dice log.
   keeps the shared documents in `table-data/` (map pieces as files), pushes changes and presence over
   server-sent events. `store.js` detects it (`api/hello`) when not inside claude.ai, so one build runs
   in three modes: claude.ai capabilities, self-hosted server, or solo. See `HOSTING.md`.
+- `vendor/peerjs.min.js` — PeerJS (MIT) for online play: the host's browser runs a hub over its solo
+  storage (`makeHub`), guests join with `#join=<room>` links; both reuse `serverBackend`/`serverRoom`.
+  `?broker=host:port/path&broker_secure=0` picks a different PeerJS broker (tests use a local one).
+- `docs/` — the GitHub Pages website, written by `tools/build.py` (full page + data + vendor). Commit it.
 - `index.html` — built output (page content only; claude.ai adds the doctype/head skeleton).
 - `tools/`
   - `build.py` — concatenates `src/*` into `index.html`.

@@ -336,11 +336,13 @@ const UI = (() => {
     const sc = Store.activeScene();
     $('#sceneName').textContent = sc.name || 'Blank grid';
     const conn = $('#conn');
-    conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline ? 'live' : '');
+    const hostDown = S.p2p && S.p2p.role === 'host' && S.p2p.status !== 'online';
+    conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline && !hostDown ? 'live' : '');
     conn.title = S.mode === 'local' ? 'Solo mode: this device only' : S.offline ? 'Reconnecting…' : S.loaded ? 'Live' : 'Connecting…';
     const pill = $('#statusPill');
     let st = '';
     if (S.mode === 'local') st = 'Solo · this device';
+    else if (S.p2p && S.p2p.role === 'host') st = { online: 'Hosting online', starting: 'Going online…', reconnecting: 'Reconnecting…' }[S.p2p.status] || 'Not online';
     else if (S.offline) st = 'Reconnecting…';
     else if (S.readOnly) st = 'View only';
     else if (S.stale && !S.loaded) st = 'Can’t reach the table';
@@ -2750,6 +2752,31 @@ const UI = (() => {
   }
 
   /* ================================================== PEOPLE */
+  // Play online card: host from this browser, or show the link; guests see where they are
+  function onlineCard() {
+    const p = S.p2p;
+    if (p && p.role === 'host') {
+      const msg = { online: 'Your table is online. Anyone with the link can join while this tab stays open.', starting: 'Connecting to the online lobby…', reconnecting: 'Lost the online lobby for a moment, reconnecting…', taken: 'Another tab or device is already hosting this table. Close it, then reload this page.', offline: 'Couldn’t reach the online lobby. Check your internet connection; it retries by itself.', unsupported: 'This browser can’t host online games. Try a current Chrome, Firefox, Edge or Safari.' }[p.status] || '';
+      return html`<div class="card"><div class="card-title"><h3>Play online</h3><span class="badge ${p.status === 'online' ? 'green' : ''}">${p.status === 'online' ? 'Online' : 'Not yet online'}</span></div>
+        <p class="prose">${msg}</p>
+        <input type="text" readonly value="${Store.inviteLink()}" aria-label="Invite link" onfocus="this.select()">
+        <div class="btn-row"><button type="button" class="btn btn-primary" data-act="copy-invite">${icon('copy')} Copy invite link</button><button type="button" class="btn btn-ghost" data-act="host-stop">Stop hosting</button></div>
+        <p class="hint">Your browser is the table: everything is saved on this device. Keep this tab open while you play (on a phone, keep the screen on). The link stays the same every session.</p></div>`;
+    }
+    if (p && p.role === 'guest') {
+      const trouble = p.trouble === 'peer-unavailable' ? 'The DM’s table isn’t open right now. This page connects by itself as soon as it is.' : S.offline ? 'Connecting to the DM’s table…' : 'You’re playing at the DM’s table. Everything you do is saved there.';
+      return html`<div class="card"><div class="card-title"><h3>Online table</h3><span class="badge ${S.offline ? '' : 'green'}">${S.offline ? 'Waiting' : 'Connected'}</span></div>
+        <p class="prose">${trouble}</p><p class="hint">Keep this link to come back later. The game runs while the DM’s tab is open.</p>
+        <div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" data-act="leave-online">Leave and play solo</button></div></div>`;
+    }
+    if (S.mode === 'local') {
+      return html`<div class="card"><div class="card-title"><h3>Play online</h3></div>
+        <p class="prose">Turn this table into an online game: you get a link to send to friends, and they join from any phone or computer. No accounts.</p>
+        <div class="btn-row"><button type="button" class="btn btn-primary" data-act="host-start">${icon('users')} Host this table online</button></div>
+        <p class="hint">Your browser becomes the table, so keep this tab open while you play. Your heroes, maps and homebrew come along.</p></div>`;
+    }
+    return '';
+  }
   function openPeople() {
     Sheet.open({
       title: 'People and settings',
@@ -2776,8 +2803,9 @@ const UI = (() => {
               const pr = p.presence || {};
               const ch = pr.ch && S.chars.get(pr.ch);
               return html`<div class="row"><span class="disc sm" style="--c:${safeColor(pr.col) || '#888'}">${initials(pr.nm || '?')}</span><span class="main"><span class="title" style="display:block">${pr.nm || (p.isMe ? 'You' : 'Someone')}${p.isMe ? ' (you)' : ''}</span><span class="sub" style="display:block">${pr.dm ? 'DM' : 'Player'}${ch ? ' · ' + ch.name : ''}${pr.w === 1 ? '' : p.isMe && S.relay ? ' · limited access' : ''}${p.guest ? ' · guest' : ''}</span></span></div>`;
-            })}</div>` : html`<p class="hint">${S.mode === 'local' ? 'Solo mode: open this table from its shared link to see friends here.' : 'Only you for now.'}</p>`}</div>
-          ${S.server ? html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
+            })}</div>` : html`<p class="hint">${S.mode === 'local' ? 'Solo mode: this table is only on this device. Use Play online below to bring friends in.' : 'Only you for now.'}</p>`}</div>
+          ${onlineCard()}
+          ${S.p2p || S.mode === 'local' ? '' : S.server ? html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
             <p class="prose">Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.</p>
             <input type="text" readonly value="${location.origin + location.pathname}" aria-label="Table address" onfocus="this.select()">
             <p class="hint">${S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
@@ -2801,6 +2829,16 @@ const UI = (() => {
           return Sheet.cur && Sheet.cur.draw();
         }
         if (a === 'scenes') return openScenes();
+        if (a === 'host-start') return Store.startHosting();
+        if (a === 'host-stop') return confirmSheet('Stop playing online?', 'Friends are disconnected and the table goes back to this device only. Nothing is deleted, and you can host again later with the same link.', 'Stop hosting', () => Store.stopHosting(), false);
+        if (a === 'leave-online') return Store.leaveOnline();
+        if (a === 'copy-invite') {
+          const link = Store.inviteLink();
+          const done = () => toast('Link copied. Send it to your friends.');
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, () => toast('Copy the link from the box above.', 'warn'));
+          else toast('Copy the link from the box above.', 'warn');
+          return;
+        }
         if (a === 'clear-log') return confirmSheet('Clear the dice log?', 'All rolls and messages disappear for everyone.', 'Clear log', () => Store.Act.clearLog());
       },
       change(t) {

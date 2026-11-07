@@ -21,3 +21,26 @@ if "</script" in "".join(read(n) for n in ["core.js", "store.js", "map.js", "ui.
 with open(os.path.join(root, "index.html"), "w", encoding="utf-8") as f:
     f.write(out)
 print("index.html", len(out.encode("utf-8")), "bytes")
+
+# ---- website for GitHub Pages (served from docs/ on main): a full document plus data and vendor files
+import shutil
+site = os.path.join(root, "docs")
+os.makedirs(os.path.join(site, "data"), exist_ok=True)
+os.makedirs(os.path.join(site, "vendor"), exist_ok=True)
+page = out.replace(
+    '<link rel="stylesheet" href="https://fonts.googleapis.com',
+    # never block the first paint on Google Fonts (it can be slow or blocked)
+    '<link rel="stylesheet" media="print" onload="this.media=\'all\'" href="https://fonts.googleapis.com',
+)
+doc = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+       '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+       '<style>:root{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>'
+       '</head><body>' + page + '</body></html>')
+with open(os.path.join(site, "index.html"), "w", encoding="utf-8") as f:
+    f.write(doc)
+for n in ["rules", "spells", "monsters", "features"]:
+    shutil.copyfile(os.path.join(root, "data", n + ".json"), os.path.join(site, "data", n + ".json"))
+for n in ["peerjs.min.js", "peerjs.LICENSE"]:
+    shutil.copyfile(os.path.join(root, "vendor", n), os.path.join(site, "vendor", n))
+open(os.path.join(site, ".nojekyll"), "w").close()
+print("docs/ website written")
