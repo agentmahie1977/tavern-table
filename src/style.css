@@ -513,3 +513,9 @@ button.stat:hover { border-color: var(--brass); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* homebrew editor */
+.fx-row { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.fx-row .card-title b { font-size: 14px; }
+.fx-sum { color: var(--brass-hi); margin: 0; }
+.chip.fx-toggle[aria-pressed="true"] { background: rgba(217, 166, 71, 0.22); }

@@ -141,4 +141,38 @@ d = Core.derive(war, R);
 eq(d.cast.pact, true); eq(d.cast.maxLvl, 3); eq(d.cast.slots[2], 2); eq(d.cast.known, 6);
 eq(Core.pointBuyCost({ str: 15, dex: 15, con: 15, int: 8, wis: 8, cha: 8 }), 27);
 eq(Core.pointBuyCost({ str: 16, dex: 8, con: 8, int: 8, wis: 8, cha: 8 }), null);
+
+// ---- homebrew feat effects (made-up test feats)
+const archer = { cls: 'fighter', level: 5, race: 'human', base: { str: 10, dex: 16, con: 14, int: 10, wis: 12, cha: 8 }, weapons: ['longbow', 'longsword'] };
+const trade = { id: 'f1', name: 'Steady Draw', effects: [{ t: 'attack', when: 'toggle', filter: 'ranged', hit: -3, dmg: '6' }] };
+const kit = { id: 'f2', name: 'Grab Bag', effects: [
+  { t: 'ability', ab: 'dex', n: 1 }, { t: 'ac', n: 1 }, { t: 'speed', n: 5 }, { t: 'init', n: 2 }, { t: 'hpPerLevel', n: 1 },
+  { t: 'saveProf', ab: 'wis' }, { t: 'skillProf', sk: 'stealth' }, { t: 'resource', name: 'Lucky break', max: 'pb', reset: 'short' },
+  { t: 'crit', min: 19 }, { t: 'attack', filter: 'melee', dmg: '1d4', dmgType: 'fire' }, { t: 'bogus', n: 99 }] };
+let base0 = Core.derive(archer, R);
+let hbBow = (d) => d.attacks.find((a) => a.id === 'longbow');
+let hbSword = (d) => d.attacks.find((a) => a.id === 'longsword');
+d = Core.derive(archer, R, [trade]);
+eq(hbBow(d).hit, hbBow(base0).hit, 'toggle off: no change');
+eq(d.toggles.length, 1); eq(d.toggles[0].key, 'f1_0'); eq(d.toggles[0].on, false);
+d = Core.derive(Object.assign({}, archer, { fx: { f1_0: 1 } }), R, [trade]);
+eq(hbBow(d).hit, hbBow(base0).hit - 3, 'toggle on: to hit');
+eq(hbBow(d).dmg, hbBow(base0).dmg + '+6', 'toggle on: damage');
+eq(hbBow(d).using, ['Steady Draw']);
+eq(hbSword(d).hit, hbSword(base0).hit, 'ranged-only effect leaves melee alone');
+d = Core.derive(archer, R, [kit]);
+eq(d.scores.dex, 18, 'human +1 and feat +1'); eq(d.mods.dex, 4);
+eq(d.ac, base0.ac + 1 + 1, '+1 from the dex mod, +1 from the feat');
+eq(d.speed, base0.speed + 5); eq(d.init, base0.init + 1 + 2, 'dex mod +1, feat +2');
+eq(d.hpMax, base0.hpMax + 5);
+eq(d.saves.wis.prof, true); eq(d.saves.wis.bonus, 1 + 3);
+eq(d.skills.stealth.prof, true);
+eq(d.resources.find((r) => r.key === 'h:f2_7').max, 3); eq(d.resources.find((r) => r.key === 'h:f2_7').reset, 'short');
+eq(d.critMin, 19);
+eq(hbSword(d).extra, [['1d4', 'fire']]); eq(hbBow(d).extra, []);
+d = Core.derive(Object.assign({}, archer, { base: Object.assign({}, archer.base, { dex: 19 }) }), R, [kit, kit]);
+eq(d.scores.dex, 20, 'ability boost stops at 20');
+d = Core.derive(archer, R, [{ id: 'x', name: 'Junk', effects: [{ t: 'attack', hit: 'abc', dmg: '<b>1d4</b>' }, { t: 'ac', n: 1e9 }] }]);
+eq(hbBow(d).hit, hbBow(base0).hit, 'bad numbers ignored'); eq(hbBow(d).dmg, hbBow(base0).dmg, 'bad dice ignored'); eq(d.ac, base0.ac + 10, 'clamped');
+eq(Core.describeEffect(trade.effects[0]), '−3 to hit, +6 damage on ranged attacks, when switched on');
 console.log('core tests passed:', n);

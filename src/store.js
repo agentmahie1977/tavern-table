@@ -32,6 +32,7 @@ const Store = (() => {
     chars: new Map(),
     init: new Map(),
     encs: new Map(),
+    hb: new Map(), // homebrew feats, shared by the table
     log: [],
     peers: [],
     maps: new Map(),
@@ -642,7 +643,7 @@ const Store = (() => {
   };
 
   /* ------------------------------------------------------------ relay */
-  const RELAY_PATH = /^(tokens|templates|log|init|chars|game)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
+  const RELAY_PATH = /^(tokens|templates|log|init|chars|game|homebrew)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
   const RELAY_MAX = 2300;
   const relay = { seq: 0, ops: [] };
   const execState = { applied: new Map(), lastAck: '' };
@@ -771,7 +772,7 @@ const Store = (() => {
 
   /* ---------------------------------------------------- subscriptions */
   const loadedSet = new Set();
-  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'log'];
+  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'hb', 'log'];
   let loadTimer = 0;
   function markLoaded(name, meta) {
     if (meta && meta.fromCache) return;
@@ -829,6 +830,7 @@ const Store = (() => {
     col('chars', 'chars', 'chars');
     col('init', 'init', 'init');
     col('encounters', 'encs', 'encs');
+    col('homebrew', 'hb', 'homebrew');
     B.watchCol('log', { orderBy: 'ts', dir: 'desc', limit: 80 }, (rows, meta) => {
       const list = rows.map((r) => Object.assign({}, r.raw, { id: r.id })).reverse();
       const fresh = [];
@@ -1151,6 +1153,12 @@ const Store = (() => {
       return eid;
     },
     deleteEncounter: (id) => W.del('encounters/' + id),
+    saveHomebrew(id, doc) {
+      const hid = id || uid('h');
+      W.set('homebrew/' + hid, Object.assign({}, doc, { updated: Date.now() }));
+      return hid;
+    },
+    deleteHomebrew: (id) => W.del('homebrew/' + id),
     async clearLog() {
       for (const e of S.log) W.del('log/' + e.id);
     },
@@ -1252,13 +1260,16 @@ const Store = (() => {
   }
 
   /* --------------------------------------------- derived hero stats */
-  const derivedCache = new WeakMap();
+  // cached per hero object; a change to any homebrew feat starts a new cache
+  let derivedCache = new WeakMap();
+  on('homebrew', () => (derivedCache = new WeakMap()));
+  const featsFor = (ch) => (Array.isArray(ch && ch.feats) ? ch.feats : []).map((id) => S.hb.get(id)).filter(Boolean);
   function derived(ch) {
     if (!ch || !Data.rules) return null;
     let d = derivedCache.get(ch);
     if (!d) {
       try {
-        d = Core.derive(ch, Data.rules);
+        d = Core.derive(ch, Data.rules, featsFor(ch));
       } catch (e) {
         console.error('derive', e);
         return null;
@@ -1276,7 +1287,7 @@ const Store = (() => {
 
   return {
     S, on, emit, uid, LS, W, Act, Data, loadData, fetchMap, activeScene, boot, clone, deepMerge, colorFor, PALETTE,
-    derived, heroHp,
+    derived, heroHp, featsFor,
     pushPresence,
     presence: () => myPresence,
     relayPending: () => relay.ops.length,

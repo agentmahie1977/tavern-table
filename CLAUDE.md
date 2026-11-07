@@ -52,7 +52,7 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 - Nested objects merge on `update`, so to reset a map like spell slots write zeros
   (`zeroKeys()`), not `{}`.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,
-  `init/*`, `encounters/*`, `log/*`, `mapchunks/*` (map images in ~190 KB base64 pieces).
+  `init/*`, `encounters/*`, `homebrew/*`, `log/*`, `mapchunks/*` (map images in ~190 KB base64 pieces).
 - Content is SRD 5.1 (CC-BY-4.0); keep the attribution in the People and settings sheet.
   Don't paste text from purchased books into the app or `data/`; homebrew entered as mechanics
   plus your own wording is fine.
@@ -61,7 +61,7 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 
 - Let the DM role be handed to another player (today each device picks its own role in
   People and settings; the owner defaults to DM).
-- Custom content editor (homebrew monsters/spells) stored in the shared db.
+- Homebrew monsters and spells (feats exist: `homebrew/*` docs, effects applied in `Core.derive`).
 - Optional SRD 5.2 (2024 rules) dataset.
 - Fog of war.
 - Self-hosted mode has one shared password and no per-person roles; anyone with it can edit.

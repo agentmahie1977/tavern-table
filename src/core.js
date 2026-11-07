@@ -236,7 +236,72 @@ const Core = (() => {
     return 0;
   }
 
-  function derive(c, R) {
+  /* ------------------------------------------- homebrew feat effects */
+  // A homebrew feat is {id, name, desc, effects:[...]}; shared data, so every field is checked here.
+  const EFFECT_TYPES = ['attack', 'ability', 'ac', 'speed', 'init', 'hpPerLevel', 'passive', 'save', 'saveProf', 'skillProf', 'resource', 'crit'];
+  const ATTACK_FILTERS = ['any', 'melee', 'ranged', 'heavy', 'finesse', 'light', 'thrown', 'unarmed', 'spell'];
+  const DAMAGE_TYPES = ['acid', 'bludgeoning', 'cold', 'fire', 'force', 'lightning', 'necrotic', 'piercing', 'poison', 'psychic', 'radiant', 'slashing', 'thunder'];
+  const int = (v, lo, hi) => clamp(Math.round(Number(v) || 0), lo, hi);
+  function cleanDmg(src) {
+    const t = parseDice(String(src || ''));
+    if (!t || t.some((x) => x.keep)) return '';
+    const ex = termsToExpr(t);
+    return ex.startsWith('-') ? ex : '+' + ex;
+  }
+  // flatten feats into checked effects, each with a stable key (featId_index)
+  function featEffects(feats) {
+    const out = [];
+    (feats || []).forEach((f) => {
+      if (!f || !Array.isArray(f.effects)) return;
+      f.effects.slice(0, 20).forEach((e, i) => {
+        if (!e || !EFFECT_TYPES.includes(e.t)) return;
+        out.push(Object.assign({}, e, { key: String(f.id) + '_' + i, feat: String(f.name || 'Feat').slice(0, 60) }));
+      });
+    });
+    return out;
+  }
+  const LIMIT = { ac: 10, speed: 60, init: 10, hpPerLevel: 5, passive: 10, save: 10 };
+  function sumOf(fx, t, pick) {
+    let n = 0;
+    fx.forEach((e) => {
+      if (e.t === t && (!pick || pick(e))) n += int(e.n, -LIMIT[t], LIMIT[t]);
+    });
+    return n;
+  }
+  // a short plain-language line for an effect (sheet, editor preview)
+  function describeEffect(e) {
+    const sg = (n) => (n >= 0 ? '+' : MINUS) + Math.abs(n);
+    const filt = (f) => (f === 'any' || !f ? 'weapon attacks' : f === 'spell' ? 'spell attacks' : f + ' attacks');
+    switch (e.t) {
+      case 'attack': {
+        const bits = [];
+        if (int(e.hit, -20, 20)) bits.push(sg(int(e.hit, -20, 20)) + ' to hit');
+        const d = cleanDmg(e.dmg);
+        if (d) bits.push(d.replace(/^\+/, '+').replace(/^-/, MINUS) + ' damage' + (e.dmgType && DAMAGE_TYPES.includes(e.dmgType) ? ' (' + e.dmgType + ')' : ''));
+        return (bits.join(', ') || 'no change') + ' on ' + filt(e.filter) + (e.when === 'toggle' ? ', when switched on' : '');
+      }
+      case 'ability': return (ABIL_NAME[e.ab] || 'Ability') + ' ' + sg(int(e.n, -4, 4)) + ' (max 20)';
+      case 'ac': return 'Armor class ' + sg(int(e.n, -10, 10));
+      case 'speed': return 'Speed ' + sg(int(e.n, -60, 60)) + ' ft';
+      case 'init': return 'Initiative ' + sg(int(e.n, -10, 10));
+      case 'hpPerLevel': return sg(int(e.n, -5, 5)) + ' hit points per level';
+      case 'passive': return 'Passive Perception ' + sg(int(e.n, -10, 10));
+      case 'save': return (e.ab === 'all' ? 'All saving throws' : (ABIL_NAME[e.ab] || '') + ' saves') + ' ' + sg(int(e.n, -10, 10));
+      case 'saveProf': return 'Proficient in ' + (ABIL_NAME[e.ab] || '') + ' saves';
+      case 'skillProf': return 'Proficient in ' + String(e.sk || '').replace(/-/g, ' ');
+      case 'resource': return String(e.name || 'Uses') + ': ' + (e.max === 'pb' ? 'proficiency bonus' : ABILS.includes(e.max) ? ABIL_SHORT[e.max] + ' modifier (min 1)' : int(e.max, 1, 99)) + ' per ' + (e.reset === 'short' ? 'short rest' : 'long rest');
+      case 'crit': return 'Critical hit on ' + int(e.min, 15, 20) + '–20';
+    }
+    return '';
+  }
+
+  function derive(c, R, feats) {
+    const fx = featEffects(feats);
+    const toggles = c.fx && typeof c.fx === 'object' ? c.fx : {};
+    const fb = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 };
+    fx.forEach((e) => {
+      if (e.t === 'ability' && fb[e.ab] !== undefined) fb[e.ab] += int(e.n, -4, 4);
+    });
     const cls = R.classes[c.cls] || Object.values(R.classes)[0];
     const level = clamp(parseInt(c.level, 10) || 1, 1, 20);
     const L = cls.levels[level - 1] || {};
@@ -249,7 +314,7 @@ const Core = (() => {
     const mods = {};
     for (const ab of ABILS) {
       const before = (parseInt(base[ab], 10) || 10) + rb[ab];
-      const add = parseInt(asi[ab], 10) || 0;
+      const add = (parseInt(asi[ab], 10) || 0) + fb[ab];
       scores[ab] = add > 0 ? Math.max(before, Math.min(20, before + add)) : before + add;
       mods[ab] = abMod(scores[ab]);
     }
@@ -258,12 +323,12 @@ const Core = (() => {
     // saves
     const saves = {};
     for (const ab of ABILS) {
-      const prof = cls.saves.includes(ab);
-      saves[ab] = { prof, bonus: mods[ab] + (prof ? pb : 0) };
+      const prof = cls.saves.includes(ab) || fx.some((e) => e.t === 'saveProf' && e.ab === ab);
+      saves[ab] = { prof, bonus: mods[ab] + (prof ? pb : 0) + sumOf(fx, 'save', (e) => e.ab === ab || e.ab === 'all') };
     }
 
     // skills
-    const profSet = new Set([...(c.skills || []), ...backgroundSkills(c, R), ...racialSkills(c, R)]);
+    const profSet = new Set([...(c.skills || []), ...backgroundSkills(c, R), ...racialSkills(c, R), ...fx.filter((e) => e.t === 'skillProf' && R.skills[e.sk]).map((e) => e.sk)]);
     const expSet = new Set((c.expertise || []).filter((s) => profSet.has(s)).slice(0, expertiseSlots(c)));
     const joat = c.cls === 'bard' && level >= 2 ? Math.floor(pb / 2) : 0;
     const skills = {};
@@ -273,7 +338,7 @@ const Core = (() => {
       const exp = prof && expSet.has(sk);
       skills[sk] = { ab, prof, exp, bonus: mods[ab] + (exp ? pb * 2 : prof ? pb : joat) };
     }
-    const passive = 10 + skills.perception.bonus;
+    const passive = 10 + skills.perception.bonus + sumOf(fx, 'passive');
 
     // armor & AC
     const armor = c.armor && c.armor !== ARMORLESS ? R.armor[c.armor] : null;
@@ -300,14 +365,14 @@ const Core = (() => {
       ac += 2;
       acNote += ', shield';
     }
-    ac += parseInt(c.acBonus, 10) || 0;
+    ac += (parseInt(c.acBonus, 10) || 0) + sumOf(fx, 'ac');
 
     // speed
     let speed = race ? race.speed : 30;
     const cs = L.cs || {};
     if (c.cls === 'monk' && !armor && !shield && cs.unarmored_movement) speed += cs.unarmored_movement;
     if (c.cls === 'barbarian' && level >= 5 && !(armor && armor.cat === 'Heavy')) speed += 10;
-    speed += parseInt(c.speedBonus, 10) || 0;
+    speed += (parseInt(c.speedBonus, 10) || 0) + sumOf(fx, 'speed');
 
     // hit points
     const hd = cls.hd;
@@ -319,10 +384,11 @@ const Core = (() => {
       for (let i = 2; i <= level; i++) hpMax += Math.max(1, Math.floor(hd / 2) + 1 + mods.con);
       if (c.subrace === 'hill-dwarf') hpMax += level;
       if (sub && sub.i === 'draconic') hpMax += level;
+      hpMax += level * sumOf(fx, 'hpPerLevel');
       hpMax = Math.max(1, hpMax);
     }
 
-    const init = mods.dex + joat;
+    const init = mods.dex + joat + sumOf(fx, 'init');
 
     // spellcasting
     let cast = null;
@@ -338,7 +404,7 @@ const Core = (() => {
       if (['cleric', 'druid', 'wizard'].includes(c.cls)) prepared = Math.max(1, mods[ab] + level);
       if (c.cls === 'paladin') prepared = Math.max(1, mods[ab] + Math.floor(level / 2));
       cast = {
-        ab, dc: 8 + pb + mods[ab], atk: pb + mods[ab], mod: mods[ab], slots, pact: isPact, maxLvl,
+        ab, dc: 8 + pb + mods[ab], atk: pb + mods[ab] + fx.filter((e) => e.t === 'attack' && e.filter === 'spell' && (e.when !== 'toggle' || toggles[e.key])).reduce((n, e) => n + int(e.hit, -20, 20), 0), mod: mods[ab], slots, pact: isPact, maxLvl,
         cantrips: L.cantrips || 0, known: L.known || null, prepared,
       };
     }
@@ -362,7 +428,7 @@ const Core = (() => {
         const b = avgExpr(dice);
         if (a > b) dice = ma;
       }
-      const at = { id: w, n: W.n, hit: m + (prof ? pb : 0), dmg: dice + exprMod(m), ty: W.ty, prof };
+      const at = { id: w, n: W.n, hit: m + (prof ? pb : 0), dmg: dice + exprMod(m), ty: W.ty, prof, tags: [ranged ? 'ranged' : 'melee', ...W.props.filter((p) => ['heavy', 'finesse', 'light', 'thrown'].includes(p))] };
       if (W.vers) at.vers = W.vers + exprMod(m);
       if (W.range) at.range = W.range.filter(Boolean).join('/') + ' ft';
       else if (W.thrown) at.range = 'thrown ' + W.thrown.filter(Boolean).join('/') + ' ft';
@@ -370,7 +436,27 @@ const Core = (() => {
       attacks.push(at);
     }
     const unarmedM = ma ? Math.max(strM, dexM) : strM;
-    attacks.push({ id: 'unarmed', n: 'Unarmed Strike', hit: unarmedM + pb, dmg: ma ? ma + exprMod(unarmedM) : String(Math.max(1, 1 + unarmedM)), ty: 'Bludgeoning', prof: true, range: 'reach 5 ft' });
+    attacks.push({ id: 'unarmed', n: 'Unarmed Strike', hit: unarmedM + pb, dmg: ma ? ma + exprMod(unarmedM) : String(Math.max(1, 1 + unarmedM)), ty: 'Bludgeoning', prof: true, range: 'reach 5 ft', tags: ['melee', 'unarmed'] });
+
+    // homebrew attack effects: always-on ones change the numbers, toggles only while switched on
+    const atkFx = fx.filter((e) => e.t === 'attack').map((e) => ({
+      key: e.key, feat: e.feat, filter: ATTACK_FILTERS.includes(e.filter) ? e.filter : 'any', toggle: e.when === 'toggle',
+      hit: int(e.hit, -20, 20), dmg: cleanDmg(e.dmg), dmgType: DAMAGE_TYPES.includes(e.dmgType) ? e.dmgType : '', text: describeEffect(e),
+    }));
+    atkFx.forEach((m) => (m.on = !m.toggle || !!toggles[m.key]));
+    attacks.forEach((at) => {
+      at.baseHit = at.hit;
+      at.extra = [];
+      at.using = [];
+      atkFx.forEach((m) => {
+        if (!m.on || m.filter === 'spell' || (m.filter !== 'any' && !at.tags.includes(m.filter))) return;
+        at.hit += m.hit;
+        if (m.dmg && m.dmgType) at.extra.push([m.dmg.replace(/^\+/, ''), m.dmgType]);
+        else if (m.dmg) at.dmg += m.dmg;
+        if (m.toggle && !at.using.includes(m.feat)) at.using.push(m.feat);
+      });
+    });
+    const critMin = Math.min(20, ...fx.filter((e) => e.t === 'crit').map((e) => int(e.min, 15, 20)));
 
     // dragonborn breath weapon
     let breath = null;
@@ -414,6 +500,10 @@ const Core = (() => {
     if (c.cls === 'wizard') add('arcane-recovery', 'Arcane Recovery', 1);
     if (breath) add('breath', 'Breath Weapon', 1);
     for (const r of c.customRes || []) if (r && r.n) resources.push({ key: 'c:' + r.id, n: r.n, max: clamp(parseInt(r.max, 10) || 1, 1, 999), custom: true });
+    fx.filter((e) => e.t === 'resource').forEach((e) => {
+      const max = e.max === 'pb' ? pb : ABILS.includes(e.max) ? Math.max(1, mods[e.max]) : int(e.max, 1, 99);
+      resources.push({ key: 'h:' + e.key, n: String(e.name || e.feat).slice(0, 40), max, reset: e.reset === 'short' ? 'short' : 'long', feat: e.feat });
+    });
 
     const classSpecific = [];
     if (cs.sneak_attack) classSpecific.push(['Sneak Attack', cs.sneak_attack.dice_count + 'd' + cs.sneak_attack.dice_value]);
@@ -432,6 +522,7 @@ const Core = (() => {
       level, pb, scores, mods, saves, skills, passive, init, speed, hpMax, ac, acNote, cast, attacks, breath,
       features, traits, resources, classSpecific, hitDice: level + 'd' + hd, hd, sub, cls, race, joat,
       expertiseSlots: expertiseSlots(c), asiPoints: asiPoints(c, R), racial: rb,
+      critMin, toggles: atkFx.filter((m) => m.toggle), feats: (feats || []).filter(Boolean),
     };
   }
 
@@ -604,6 +695,7 @@ const Core = (() => {
     proficiencyBonus, racialBonus, asiPoints, pointBuyCost, weaponProficient, racialSkills, backgroundSkills,
     expertiseSlots, derive, encounter, encounterMultiplier, crLabel, inTemplate, templateCorners, templateBBox,
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
+    EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
     _setRng: (f) => { rng = f; },
   };
 })();
