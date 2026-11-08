@@ -335,6 +335,8 @@ const UI = (() => {
   function renderTop() {
     const sc = Store.activeScene();
     $('#sceneName').textContent = sc.name || 'Blank grid';
+    const bn = document.querySelector('.brand-name');
+    if (bn) bn.textContent = Store.campaignName();
     const conn = $('#conn');
     const hostDown = S.p2p && S.p2p.role === 'host' && S.p2p.status !== 'online';
     conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline && !hostDown ? 'live' : '');
@@ -2752,6 +2754,61 @@ const UI = (() => {
   }
 
   /* ================================================== PEOPLE */
+  // Campaigns: list, open, rename the current one, start a new one
+  function openCampaigns() {
+    const st = { list: null, err: '', newName: '', rename: Store.campaignName(), busy: false };
+    const load = (draw) => Store.campaigns().then((l) => {
+      st.list = l;
+      st.rename = Store.campaignName();
+      if (draw) draw();
+    });
+    const where = S.server ? 'on this table’s server, so everyone can open them' : S.mode === 'remote' && !S.p2p ? 'with this shared page, so everyone can open them' : 'on this device';
+    Sheet.open({
+      title: 'Campaigns',
+      render() {
+        if (!st.list) return html`<p class="hint">Loading campaigns…</p>`;
+        return html`<p class="hint">Campaigns are saved ${where}. Switching reloads the page.${S.p2p && S.p2p.role === 'host' ? ' While you host online, each campaign has its own invite link.' : ''}</p>
+          <div class="list">${st.list.map((c) => html`<div class="row"><span class="main"><span class="title" style="display:block">${c.name}</span></span>
+            ${c.id === S.camp ? html`<span class="badge brass">Open now</span>` : html`<button type="button" class="btn btn-sm" data-act="open" data-id="${c.id}">Open</button>`}</div>`)}</div>
+          ${S.canWrite ? html`<div class="card"><label class="field"><span>Rename this campaign</span><input type="text" id="campRename" value="${st.rename}" maxlength="60" autocomplete="off"></label>
+            <div class="btn-row end"><button type="button" class="btn btn-sm" data-act="rename">${icon('check')} Rename</button></div></div>
+          <div class="card"><label class="field"><span>Start a new campaign</span><input type="text" id="campNew" value="${st.newName}" maxlength="60" placeholder="Campaign name" autocomplete="off"></label>
+            <div class="btn-row end"><button type="button" class="btn btn-primary" data-act="create" ${st.busy ? 'disabled' : ''}>${icon('plus')} Create and open</button></div></div>` : ''}
+          ${st.err ? html`<p class="err">${st.err}</p>` : ''}`;
+      },
+      act(a, b, e, draw) {
+        if (a === 'open') return Store.switchCampaign(b.dataset.id);
+        if (a === 'rename') {
+          const v = String(($('#campRename') || {}).value || '').trim();
+          if (!v) return;
+          Store.renameCampaign(S.camp, v).then(() => load(draw)).then(() => toast('Campaign renamed.')).catch(() => {
+            st.err = 'Renaming didn’t work. Check your connection.';
+            draw();
+          });
+          return;
+        }
+        if (a === 'create') {
+          const v = String(($('#campNew') || {}).value || '').trim();
+          if (!v) {
+            toast('Give the campaign a name first.', 'warn');
+            return;
+          }
+          st.busy = true;
+          draw();
+          Store.createCampaign(v).then((id) => id && Store.switchCampaign(id)).catch(() => {
+            st.busy = false;
+            st.err = 'The campaign couldn’t be created. Check your connection.';
+            draw();
+          });
+        }
+      },
+      input(t) {
+        if (t.id === 'campNew') st.newName = t.value;
+        if (t.id === 'campRename') st.rename = t.value;
+      },
+    });
+    load(Sheet.cur && Sheet.cur.draw);
+  }
   // Play online card: host from this browser, or show the link; guests see where they are
   function onlineCard() {
     const p = S.p2p;
@@ -2792,7 +2849,9 @@ const UI = (() => {
           seen.add(k);
           people.push(p);
         });
-        return html`<div class="card"><div class="card-title"><h3>You</h3>${S.me.isOwner ? html`<span class="badge brass">Table owner</span>` : ''}</div>
+        return html`<div class="card"><div class="card-title"><h3>Campaign</h3>${S.p2p && S.p2p.role === 'guest' ? '' : html`<button type="button" class="btn btn-sm" data-act="campaigns">${icon('book')} Switch or start another</button>`}</div>
+          <p class="prose" style="margin:0"><b>${Store.campaignName()}</b>. Each campaign has its own maps, heroes, encounters, dice log and homebrew.</p></div>
+          <div class="card"><div class="card-title"><h3>You</h3>${S.me.isOwner ? html`<span class="badge brass">Table owner</span>` : ''}</div>
           <label class="field"><span>Your name at the table</span><input type="text" id="pNick" value="${S.me.nick}" maxlength="40" placeholder="What friends call you" autocomplete="off"></label>
           <div class="field"><span>Your color</span><div class="swatches">${Store.PALETTE.map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="pcol" data-c="${col}" aria-pressed="${S.me.color === col}" aria-label="Color ${col}"></button>`)}</div></div>
           <div class="field"><span>Role on this device</span><div class="seg"><button type="button" data-act="role" data-r="player" aria-pressed="${!S.dm}">Player</button><button type="button" data-act="role" data-r="dm" aria-pressed="${S.dm}">Dungeon Master</button></div></div>
@@ -2829,6 +2888,7 @@ const UI = (() => {
           return Sheet.cur && Sheet.cur.draw();
         }
         if (a === 'scenes') return openScenes();
+        if (a === 'campaigns') return openCampaigns();
         if (a === 'host-start') return Store.startHosting();
         if (a === 'host-stop') return confirmSheet('Stop playing online?', 'Friends are disconnected and the table goes back to this device only. Nothing is deleted, and you can host again later with the same link.', 'Stop hosting', () => Store.stopHosting(), false);
         if (a === 'leave-online') return Store.leaveOnline();
@@ -2955,6 +3015,12 @@ const UI = (() => {
     renderTop();
   }
   function afterBoot() {
+    if (!(S.p2p && S.p2p.role === 'guest')) {
+      Store.campaigns().then(() => {
+        renderTop();
+        if (S.dm && S.canWrite && S.campName && S.game.cname !== S.campName && S.loaded) Store.Act.setGame({ cname: S.campName });
+      });
+    }
     renderTop();
     renderTabs();
     if (S.mode === 'remote' && !S.me.nick) setTimeout(askName, 600);

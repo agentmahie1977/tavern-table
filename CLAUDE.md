@@ -55,6 +55,9 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
   wrap trusted markup in `raw()`.
 - Nested objects merge on `update`, so to reset a map like spell slots write zeros
   (`zeroKeys()`), not `{}`.
+- Campaigns: `S.camp` ("main" keeps the original storage). Solo/host storage keys get `:<id>`;
+  the server keeps `table-data/campaigns/<id>/`; claude.ai prefixes paths with `camp/<id>/`.
+  Presence carries `cp` so people in other campaigns are filtered out.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,
   `init/*`, `encounters/*`, `homebrew/*`, `log/*`, `mapchunks/*` (map images in ~190 KB base64 pieces).
 - Content is SRD 5.1 (CC-BY-4.0); keep the attribution in the People and settings sheet.

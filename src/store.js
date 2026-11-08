@@ -22,6 +22,9 @@ const Store = (() => {
     server: false, // served by tools/server.js (self-hosted)
     offline: false, // self-hosted: lost the connection, reconnecting
     p2p: null, // online play: { role: 'host' | 'guest', code, status }
+    camp: 'main', // current campaign id
+    campName: '',
+    conn: null, // self-hosted server connection
     relay: false, // sending writes through a writer's page
     readOnly: false,
     executorPresent: false,
@@ -108,6 +111,17 @@ const Store = (() => {
     return PALETTE[h % PALETTE.length];
   }
 
+  /* ------------------------------------------------------- campaigns */
+  // Each campaign is its own table. "main" is the original one and keeps the old storage names.
+  const CAMP_RE = /^[a-z0-9-]{1,40}$/;
+  function pickCampaign() {
+    const q = new URLSearchParams(location.search).get('c');
+    if (q && CAMP_RE.test(q)) return q;
+    const l = LS.get('tt.campaign', 'main');
+    return CAMP_RE.test(l) ? l : 'main';
+  }
+  const campSuffix = (cid) => (cid === 'main' ? '' : ':' + cid);
+
   /* ------------------------------------------- in-memory doc mirror */
   // Documents plus collection/doc watchers; shared by the solo and self-hosted backends
   function mirror() {
@@ -155,8 +169,8 @@ const Store = (() => {
   }
 
   /* -------------------------------------------- local stand-in backend */
-  function localBackend() {
-    const KEY = 'tt.local.v1';
+  function localBackend(cid) {
+    const KEY = 'tt.local.v1' + campSuffix(cid || 'main');
     const M = mirror();
     const docs = M.docs;
     try {
@@ -165,7 +179,7 @@ const Store = (() => {
     } catch (e) { /* ignore */ }
     let bc = null;
     try {
-      bc = new BroadcastChannel('tt.local.db');
+      bc = new BroadcastChannel('tt.local.db' + campSuffix(cid || 'main'));
     } catch (e) { /* no channel */ }
     let saveT = 0;
     // save right after the current batch of changes. Not on a timer: browsers slow timers down in
@@ -190,7 +204,7 @@ const Store = (() => {
     const idb = (() => {
       let dbp = null;
       const open = () => dbp || (dbp = new Promise((res, rej) => {
-        const rq = indexedDB.open('tt.local.maps', 1);
+        const rq = indexedDB.open('tt.local.maps' + campSuffix(cid || 'main'), 1);
         rq.onupgradeneeded = () => rq.result.createObjectStore('chunks');
         rq.onsuccess = () => res(rq.result);
         rq.onerror = () => rej(rq.error);
@@ -297,8 +311,8 @@ const Store = (() => {
     LS.set('tt.key', key);
     return { key };
   }
-  function serverConn(key) {
-    const q = '?key=' + encodeURIComponent(key || '');
+  function serverConn(key, cid) {
+    const q = '?key=' + encodeURIComponent(key || '') + '&c=' + encodeURIComponent(cid || 'main');
     const conn = { peer: null, owner: false, ready: false, live: false, onSnap: null, onDoc: null, onPeers: null, onHello: null, onState: null };
     let first = null;
     conn.firstHello = new Promise((res) => (first = res));
@@ -687,24 +701,27 @@ const Store = (() => {
   }
 
   /* ------------------------------------------------- db-backed backend */
-  function remoteBackend(db) {
+  function remoteBackend(db, cid) {
+    // other campaigns live under camp/<id>/… in the same shared database
+    const P = (p) => (!cid || cid === 'main' ? p : 'camp/' + cid + '/' + p);
     const wrap = (snapDocs) => snapDocs.filter((d) => d.exists !== false).map((d) => ({ id: d.id, raw: d.data() }));
     return {
       kind: 'remote',
       watchCol(col, opts, cb, onErr) {
-        let q = db.collection(col);
+        let q = db.collection(P(col));
         if (opts && opts.orderBy) q = q.orderBy(opts.orderBy, opts.dir || 'asc');
         if (opts && opts.limit) q = q.limit(opts.limit);
         return q.onSnapshot((snap) => cb(wrap(snap.docs), snap.metadata || {}), (e) => onErr && onErr(e));
       },
       watchDoc(path, cb, onErr) {
-        return db.doc(path).onSnapshot((snap) => cb(snap.exists ? snap.data() : null, snap.metadata || {}), (e) => onErr && onErr(e));
+        return db.doc(P(path)).onSnapshot((snap) => cb(snap.exists ? snap.data() : null, snap.metadata || {}), (e) => onErr && onErr(e));
       },
-      set: (path, data) => db.doc(path).set(data),
-      upd: (path, patch) => db.doc(path).update(patch),
-      del: (path) => db.doc(path).delete(),
+      set: (path, data) => db.doc(P(path)).set(data),
+      upd: (path, patch) => db.doc(P(path)).update(patch),
+      del: (path) => db.doc(P(path)).delete(),
+      col: (col) => db.collection(P(col)),
       async get(path) {
-        const s = await db.doc(path).get();
+        const s = await db.doc(P(path)).get();
         return s.exists ? s.data() : null;
       },
     };
@@ -714,7 +731,7 @@ const Store = (() => {
   function localRoom() {
     let bc;
     try {
-      bc = new BroadcastChannel('tt.local.room');
+      bc = new BroadcastChannel('tt.local.room' + campSuffix(S.camp));
     } catch (e) {
       return null;
     }
@@ -1032,7 +1049,7 @@ const Store = (() => {
     }
   }
   function basePresence() {
-    pushPresence({ pk: S.me.pk, nm: (S.me.nick || '').slice(0, 40), col: S.me.color, ch: S.myChar || null, dm: S.dm ? 1 : 0, w: S.canWrite === true ? 1 : 0, sc: S.game.scene || null });
+    pushPresence({ pk: S.me.pk, nm: (S.me.nick || '').slice(0, 40), col: S.me.color, ch: S.myChar || null, dm: S.dm ? 1 : 0, w: S.canWrite === true ? 1 : 0, sc: S.game.scene || null, cp: S.camp });
   }
 
   /* ---------------------------------------------------- subscriptions */
@@ -1113,7 +1130,7 @@ const Store = (() => {
     const room = S.room;
     if (!room) return;
     room.onPeers((ch) => {
-      S.peers = ch.peers || room.peers();
+      S.peers = (ch.peers || room.peers()).filter((p) => p.sameTab || ((p.presence && p.presence.cp) || 'main') === S.camp);
       try {
         relayTick(S.peers);
       } catch (e) {
@@ -1432,7 +1449,7 @@ const Store = (() => {
       if (S.mode !== 'remote' || !S.dm || !Store.db) return;
       try {
         const cutoff = Date.now() - 10 * 864e5;
-        const snap = await Store.db.collection('log').where('ts', '<', cutoff).limit(100).get();
+        const snap = await S.backend.col('log').where('ts', '<', cutoff).limit(100).get();
         snap.docs.forEach((d) => W.del('log/' + d.id));
       } catch (e) { /* not important */ }
     },
@@ -1447,6 +1464,7 @@ const Store = (() => {
   /* ------------------------------------------------------------- boot */
   async function boot(opts) {
     toastFn = opts.toast || toastFn;
+    S.camp = pickCampaign();
     const cl = window.claude && typeof window.claude.use === 'function' ? window.claude : null;
     let db = null;
     let room = null;
@@ -1468,7 +1486,13 @@ const Store = (() => {
     const found = !cl && !opts.forceLocal ? await findServer() : null;
     if (found && found.refused) toastWarn('No password, so this is solo mode on this device only. Reload to try again.');
     if (found && !found.refused) {
-      const conn = serverConn(found.key);
+      // a campaign that no longer exists on this server: back to the main one
+      try {
+        const r = await fetch('api/campaigns?key=' + encodeURIComponent(found.key)).then((x) => x.json());
+        if (S.camp !== 'main' && !(r.campaigns || []).some((c) => c.id === S.camp)) S.camp = 'main';
+      } catch (e) { /* keep the choice */ }
+      const conn = serverConn(found.key, S.camp);
+      S.conn = conn;
       await Promise.race([conn.firstHello, sleep(6000)]);
       conn.onState = (live) => {
         S.offline = !live;
@@ -1507,20 +1531,20 @@ const Store = (() => {
       } else {
         S.p2p = null;
         S.mode = 'local';
-        S.backend = localBackend();
+        S.backend = localBackend(S.camp);
         S.room = localRoom();
       }
     } else if (!cl && !opts.forceLocal && LS.get('tt.hosting', false)) {
       // this browser hosts the table online: its saved table is the one everyone plays on
-      const hub = makeHub(localBackend());
+      const hub = makeHub(localBackend(S.camp));
       const conn = loopbackConn(hub);
       S.mode = 'remote';
       S.backend = serverBackend(conn);
       S.room = serverRoom(conn);
-      let code = LS.get('tt.room', null);
+      let code = LS.get('tt.room' + campSuffix(S.camp), null);
       if (!code || !ROOM_RE.test(code)) {
         code = 'tt-' + uid('').toLowerCase();
-        LS.set('tt.room', code);
+        LS.set('tt.room' + campSuffix(S.camp), code);
       }
       S.p2p = { role: 'host', code, status: 'starting' };
       peerHost(hub, code, (st) => {
@@ -1534,11 +1558,11 @@ const Store = (() => {
       me = { id: null, isOwner: true, canEdit: true, name: '' };
     } else if (db) {
       S.mode = 'remote';
-      S.backend = remoteBackend(db);
+      S.backend = remoteBackend(db, S.camp);
       S.room = room;
     } else {
       S.mode = 'local';
-      S.backend = localBackend();
+      S.backend = localBackend(S.camp);
       S.room = localRoom();
     }
     let pk = me && me.id;
@@ -1620,6 +1644,65 @@ const Store = (() => {
       pushPresence({ col: c });
       emit('me');
     },
+    // campaigns: kept on this device (solo / hosting), on the self-hosted server, or in the shared claude.ai db
+    async campaigns() {
+      let list = [];
+      try {
+        if (S.p2p && S.p2p.role === 'guest') list = [];
+        else if (S.server && S.conn) list = (await S.conn.getJson('api/campaigns')).campaigns || [];
+        else if (S.mode === 'remote' && Store.db) {
+          const snap = await Store.db.collection('campaigns').get();
+          list = snap.docs.filter((d) => d.exists !== false).map((d) => Object.assign({ id: d.id }, d.data()));
+        } else list = LS.get('tt.campaigns', []);
+      } catch (e) {
+        list = [];
+      }
+      list = (Array.isArray(list) ? list : []).filter((c) => c && CAMP_RE.test(c.id)).map((c) => ({ id: c.id, name: String(c.name || 'Untitled campaign').slice(0, 60), created: c.created || 0 }));
+      if (!list.some((c) => c.id === 'main')) list.unshift({ id: 'main', name: 'Main campaign', created: 0 });
+      const cur = list.find((c) => c.id === S.camp);
+      if (cur) S.campName = cur.name;
+      return list;
+    },
+    async createCampaign(name) {
+      name = String(name || '').trim().slice(0, 60);
+      if (!name) return null;
+      if (S.server && S.conn) return (await S.conn.post('api/campaigns', { name })).id;
+      const id = 'c' + uid('').slice(-10).toLowerCase();
+      if (S.mode === 'remote' && Store.db) {
+        await Store.db.doc('campaigns/' + id).set({ name, created: Date.now() });
+        return id;
+      }
+      const list = LS.get('tt.campaigns', []);
+      list.push({ id, name, created: Date.now() });
+      LS.set('tt.campaigns', list);
+      return id;
+    },
+    async renameCampaign(id, name) {
+      name = String(name || '').trim().slice(0, 60);
+      if (!name) return;
+      if (S.server && S.conn) await S.conn.post('api/campaigns', { id, name });
+      else if (S.mode === 'remote' && Store.db) await Store.db.doc('campaigns/' + id).set({ name, created: Date.now() });
+      else {
+        const list = LS.get('tt.campaigns', []).filter((c) => c.id !== id);
+        list.push({ id, name, created: Date.now() });
+        LS.set('tt.campaigns', list);
+      }
+      if (id === S.camp) {
+        S.campName = name;
+        if (S.canWrite) setGame({ cname: name }); // so everyone at the table sees it
+        emit('me');
+      }
+    },
+    switchCampaign(id) {
+      if (!CAMP_RE.test(id)) return;
+      LS.set('tt.campaign', id);
+      const u = new URL(location.href);
+      u.searchParams.delete('c');
+      u.hash = '';
+      location.href = u.toString();
+      setTimeout(() => location.reload(), 50);
+    },
+    campaignName: () => S.game.cname || S.campName || (S.camp === 'main' ? 'Main campaign' : 'Campaign'),
     // online play (GitHub Pages and other plain hosting): start or stop hosting this table
     startHosting() {
       LS.set('tt.hosting', true);

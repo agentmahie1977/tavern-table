@@ -27,9 +27,7 @@ const PORT = parseInt(opt('port', process.env.PORT || '8080'), 10);
 const PASSWORD = String(opt('password', process.env.TABLE_PASSWORD || ''));
 const ROOT = __dirname;
 const DATA_DIR = path.resolve(opt('data', path.join(ROOT, 'table-data')));
-const CHUNK_DIR = path.join(DATA_DIR, 'chunks');
-const DB_FILE = path.join(DATA_DIR, 'table.json');
-fs.mkdirSync(CHUNK_DIR, { recursive: true });
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const MAX_DOC = 300 * 1024; // a map piece is ~190 KB
 const MAX_BODY = 1024 * 1024;
@@ -62,90 +60,113 @@ function deepMerge(a, b) {
   return out;
 }
 const isChunk = (p) => p.startsWith('mapchunks/');
-const chunkFile = (p) => path.join(CHUNK_DIR, p.slice('mapchunks/'.length) + '.json');
 
-const docs = new Map();
+// One table per campaign: the default campaign ("main") lives in DATA_DIR itself,
+// others in DATA_DIR/campaigns/<id>/. The list of campaigns is DATA_DIR/campaigns.json.
+const CAMP_RE = /^[a-z0-9-]{1,40}$/;
+const REG_FILE = path.join(DATA_DIR, 'campaigns.json');
+let registry = [];
 try {
-  const saved = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-  for (const p in saved) if (PATH_RE.test(p) && !isChunk(p)) docs.set(p, saved[p]);
-} catch (e) {
-  if (e.code !== 'ENOENT') console.error('Could not read the saved table (' + e.message + '). Starting empty; the old file is kept as table.json.bad');
-  if (e.code !== 'ENOENT') try { fs.copyFileSync(DB_FILE, DB_FILE + '.bad'); } catch (e2) { /* ignore */ }
+  registry = JSON.parse(fs.readFileSync(REG_FILE, 'utf8')).filter((c) => c && CAMP_RE.test(c.id));
+} catch (e) { /* none yet */ }
+function saveRegistry() {
+  const tmp = REG_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(registry));
+  fs.renameSync(tmp, REG_FILE);
 }
+const campaignExists = (cid) => cid === 'main' || registry.some((c) => c.id === cid);
+const tables = new Map();
+function table(cid) {
+  if (tables.has(cid)) return tables.get(cid);
+  const dir = cid === 'main' ? DATA_DIR : path.join(DATA_DIR, 'campaigns', cid);
+  const t = { cid, dir, chunkDir: path.join(dir, 'chunks'), dbFile: path.join(dir, 'table.json'), docs: new Map(), clients: new Map(), saveTimer: null, peersTimer: null };
+  fs.mkdirSync(t.chunkDir, { recursive: true });
+  try {
+    const saved = JSON.parse(fs.readFileSync(t.dbFile, 'utf8'));
+    for (const p in saved) if (PATH_RE.test(p) && !isChunk(p)) t.docs.set(p, saved[p]);
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.error(`Could not read the saved table for "${cid}" (${e.message}). Starting it empty; the old file is kept as table.json.bad`);
+      try { fs.copyFileSync(t.dbFile, t.dbFile + '.bad'); } catch (e2) { /* ignore */ }
+    }
+  }
+  tables.set(cid, t);
+  return t;
+}
+table('main');
 
-let saveTimer = null;
-function save() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    const tmp = DB_FILE + '.tmp';
+function save(t) {
+  if (t.saveTimer) return;
+  t.saveTimer = setTimeout(() => {
+    t.saveTimer = null;
+    const tmp = t.dbFile + '.tmp';
     try {
-      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(docs)));
-      fs.renameSync(tmp, DB_FILE);
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(t.docs)));
+      fs.renameSync(tmp, t.dbFile);
     } catch (e) {
       console.error('Saving the table failed:', e.message);
     }
   }, 400);
 }
-function getDoc(p) {
-  if (!isChunk(p)) return docs.has(p) ? docs.get(p) : null;
+const chunkFile = (t, p) => path.join(t.chunkDir, p.slice('mapchunks/'.length) + '.json');
+function getDoc(t, p) {
+  if (!isChunk(p)) return t.docs.has(p) ? t.docs.get(p) : null;
   try {
-    return JSON.parse(fs.readFileSync(chunkFile(p), 'utf8'));
+    return JSON.parse(fs.readFileSync(chunkFile(t, p), 'utf8'));
   } catch (e) {
     return null;
   }
 }
 // apply one write; returns null or an error code
-function applyWrite(op) {
+function applyWrite(t, op) {
   const p = op && op.p;
   if (typeof p !== 'string' || !PATH_RE.test(p)) return 'invalid_argument';
   if (op.t === 'del') {
-    if (isChunk(p)) fs.rm(chunkFile(p), { force: true }, () => {});
+    if (isChunk(p)) fs.rm(chunkFile(t, p), { force: true }, () => {});
     else {
-      docs.delete(p);
-      save();
+      t.docs.delete(p);
+      save(t);
     }
-    broadcast('doc', { p, d: null });
+    broadcast(t, 'doc', { p, d: null });
     return null;
   }
   if (!isObj(op.d)) return 'invalid_argument';
   let next;
   if (op.t === 'set') next = op.d;
   else if (op.t === 'upd') {
-    const cur = getDoc(p);
+    const cur = getDoc(t, p);
     if (!cur) return 'invalid_argument'; // the page re-sends a set where that is meant
     next = deepMerge(cur, op.d);
   } else return 'invalid_argument';
   const text = JSON.stringify(next);
   if (text.length > MAX_DOC) return 'invalid_argument';
   if (isChunk(p)) {
-    fs.writeFileSync(chunkFile(p), text);
+    fs.writeFileSync(chunkFile(t, p), text);
     return null; // pieces are fetched when needed, not pushed to everyone
   }
-  docs.set(p, next);
-  save();
-  broadcast('doc', { p, d: next });
+  t.docs.set(p, next);
+  save(t);
+  broadcast(t, 'doc', { p, d: next });
   return null;
 }
 
 /* ------------------------------------------------- people + live push */
-const clients = new Map(); // peer -> { res, presence, t, owner }
 function send(res, event, data) {
   res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n');
 }
-function broadcast(event, data) {
+function broadcast(t, event, data) {
   const msg = 'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n';
-  clients.forEach((c) => c.res.write(msg));
+  t.clients.forEach((c) => c.res.write(msg));
 }
-let peersTimer = null;
-function peersSoon() {
-  if (peersTimer) return;
-  peersTimer = setTimeout(() => {
-    peersTimer = null;
-    broadcast('peers', { peers: [...clients].map(([peer, c]) => ({ peer, presence: c.presence, t: c.t })) });
+function peersSoon(t) {
+  if (t.peersTimer) return;
+  t.peersTimer = setTimeout(() => {
+    t.peersTimer = null;
+    broadcast(t, 'peers', { peers: [...t.clients].map(([peer, c]) => ({ peer, presence: c.presence, t: c.t })) });
   }, 40);
 }
-setInterval(() => clients.forEach((c) => c.res.write(': keep-alive\n\n')), 20000);
+setInterval(() => tables.forEach((t) => t.clients.forEach((c) => c.res.write(': keep-alive\n\n'))), 20000);
+const totalClients = () => [...tables.values()].reduce((n, t) => n + t.clients.size, 0);
 
 /* ------------------------------------------------------------ helpers */
 function authorized(url) {
@@ -201,34 +222,62 @@ const server = http.createServer(async (req, res) => {
     if (!route.startsWith('/api/')) return json(res, 404, { code: 'not_found' });
     if (!authorized(url)) return json(res, 401, { code: 'revoked', message: 'wrong password' });
 
+    if (route === '/api/campaigns') {
+      if (req.method === 'GET') return json(res, 200, { campaigns: registry });
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        const name = String(body.name || '').trim().slice(0, 60);
+        if (!name) return json(res, 400, { code: 'invalid_argument', message: 'name needed' });
+        if (body.id !== undefined) {
+          // rename (the main campaign's name is kept in the list too)
+          const id = String(body.id);
+          if (!campaignExists(id)) return json(res, 404, { code: 'not_found' });
+          const c = registry.find((x) => x.id === id);
+          if (c) c.name = name;
+          else registry.push({ id, name, created: Date.now() });
+          saveRegistry();
+          return json(res, 200, { id });
+        }
+        if (registry.length >= 50) return json(res, 400, { code: 'quota_exceeded', message: 'too many campaigns' });
+        const id = 'c' + crypto.randomBytes(5).toString('hex');
+        registry.push({ id, name, created: Date.now() });
+        saveRegistry();
+        table(id);
+        return json(res, 200, { id });
+      }
+    }
+    const cid = url.searchParams.get('c') || 'main';
+    if (!CAMP_RE.test(cid) || !campaignExists(cid)) return json(res, 404, { code: 'not_found', message: 'no such campaign' });
+    const t = table(cid);
+
     if (req.method === 'GET' && route === '/api/events') {
-      if (clients.size >= MAX_PEERS) return json(res, 503, { code: 'unavailable', message: 'table is full' });
+      if (totalClients() >= MAX_PEERS) return json(res, 503, { code: 'unavailable', message: 'table is full' });
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.write('retry: 2000\n\n');
       const peer = 'p' + crypto.randomBytes(8).toString('hex');
-      clients.set(peer, { res, presence: {}, t: Date.now(), owner: isLocal(req) });
+      t.clients.set(peer, { res, presence: {}, t: Date.now(), owner: isLocal(req) });
       send(res, 'hello', { peer, owner: isLocal(req) });
-      send(res, 'snap', { docs: Object.fromEntries(docs) });
-      peersSoon();
+      send(res, 'snap', { docs: Object.fromEntries(t.docs) });
+      peersSoon(t);
       req.on('close', () => {
-        clients.delete(peer);
-        peersSoon();
+        t.clients.delete(peer);
+        peersSoon(t);
       });
       return;
     }
     if (req.method === 'GET' && route === '/api/doc') {
       const p = url.searchParams.get('p') || '';
       if (!PATH_RE.test(p)) return json(res, 400, { code: 'invalid_argument' });
-      return json(res, 200, { d: getDoc(p) });
+      return json(res, 200, { d: getDoc(t, p) });
     }
     if (req.method === 'POST' && route === '/api/write') {
       const op = await readBody(req);
-      const err = applyWrite(op);
+      const err = applyWrite(t, op);
       return err ? json(res, 400, { code: err }) : json(res, 200, { ok: true });
     }
     if (req.method === 'POST' && route === '/api/presence') {
       const body = await readBody(req);
-      const c = clients.get(body.peer);
+      const c = t.clients.get(body.peer);
       if (!c || !isObj(body.patch)) return json(res, 400, { code: 'invalid_argument' });
       const next = Object.assign({}, c.presence);
       for (const k in body.patch) {
@@ -238,7 +287,7 @@ const server = http.createServer(async (req, res) => {
       if (JSON.stringify(next).length > MAX_PRESENCE) return json(res, 400, { code: 'invalid_argument', message: 'presence too large' });
       c.presence = next;
       c.t = Date.now();
-      peersSoon();
+      peersSoon(t);
       return json(res, 200, { ok: true });
     }
     return json(res, 404, { code: 'not_found' });
