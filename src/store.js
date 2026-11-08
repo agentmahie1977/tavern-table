@@ -1167,12 +1167,8 @@ const Store = (() => {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then((d) => {
-        if (name === 'monsters' || name === 'spells') {
-          const idx = new Map();
-          d.forEach((x) => idx.set(x.i, x));
-          Data[name + 'ById'] = idx;
-        }
-        Data[name] = d;
+        Data.srd[name] = d;
+        mergeHomebrew();
         emit('data', name);
         return d;
       });
@@ -1182,7 +1178,48 @@ const Store = (() => {
     }
     return DATA[name];
   }
-  const Data = { rules: null, spells: null, monsters: null, features: null, spellsById: null, monstersById: null };
+  const Data = { rules: null, spells: null, monsters: null, features: null, spellsById: null, monstersById: null, srd: {} };
+  // The rules, spell list, bestiary and feature texts everyone sees: the SRD plus this table's homebrew.
+  function mergeHomebrew() {
+    const hb = [...S.hb.values()];
+    const srd = Data.srd;
+    const of = (k) => hb.filter((f) => f && f.kind === k && f.id);
+    if (srd.rules) {
+      const R = Object.assign({}, srd.rules, { classes: {} });
+      for (const k in srd.rules.classes) R.classes[k] = Object.assign({}, srd.rules.classes[k], { subs: srd.rules.classes[k].subs.slice() });
+      of('class').forEach((f) => {
+        const C = Core.homebrewClass(f, srd.rules);
+        if (C) R.classes['hb-' + f.id] = C;
+      });
+      of('subclass').forEach((f) => {
+        const C = R.classes[f.cls];
+        if (!C) return;
+        const start = C.hb ? C.subStart : (C.subs[0] && C.subs[0].start) || 3;
+        C.subs.push({ i: 'hb-' + f.id, n: String(f.name || 'Homebrew subclass').slice(0, 60), flavor: C.hb ? C.subFlavor : (C.subs[0] && C.subs[0].flavor) || 'Subclass', start, levels: Core.featureLevels(f.features, 'hb-' + f.id), d: String(f.desc || '').slice(0, 3000), hb: true });
+      });
+      Data.rules = R;
+    }
+    if (srd.features || S.hb.size) {
+      const F = Object.assign({}, srd.features || {});
+      [...of('class'), ...of('subclass')].forEach((f) => (Array.isArray(f.features) ? f.features : []).slice(0, 40).forEach((ft, k) => {
+        F['hb-' + f.id + '-' + k] = { n: String((ft && ft.name) || 'Feature').slice(0, 60), lvl: Core.clamp(Number(ft && ft.lvl) || 1, 1, 20), d: String((ft && ft.desc) || '').slice(0, 3000) };
+      }));
+      Data.features = F;
+    }
+    for (const [name, k, conv] of [['spells', 'spell', Core.spellFromHomebrew], ['monsters', 'monster', Core.monsterFromHomebrew]]) {
+      if (!srd[name]) continue;
+      const list = srd[name].concat(of(k).map(conv));
+      const idx = new Map();
+      list.forEach((x) => idx.set(x.i, x));
+      Data[name] = list;
+      Data[name + 'ById'] = idx;
+    }
+  }
+  on('homebrew', () => {
+    mergeHomebrew();
+    derivedCache = new WeakMap(); // before anything redraws with the new rules
+    emit('data', 'homebrew');
+  });
 
   /* ------------------------------------------------------- map images */
   const CHUNK = 190000;
@@ -1612,8 +1649,36 @@ const Store = (() => {
   /* --------------------------------------------- derived hero stats */
   // cached per hero object; a change to any homebrew feat starts a new cache
   let derivedCache = new WeakMap();
-  on('homebrew', () => (derivedCache = new WeakMap()));
-  const featsFor = (ch) => (Array.isArray(ch && ch.feats) ? ch.feats : []).map((id) => S.hb.get(id)).filter(Boolean);
+  function featsFor(ch) {
+    if (!ch) return [];
+    const out = [];
+    const seen = new Set();
+    const add = (f) => {
+      if (f && !seen.has(f.id)) {
+        seen.add(f.id);
+        out.push(f);
+      }
+    };
+    (Array.isArray(ch.feats) ? ch.feats : []).forEach((id) => {
+      const f = S.hb.get(id);
+      if (f && (f.kind || 'feat') === 'feat') add(f);
+    });
+    // a magic item counts while it's equipped, and attuned if it needs attunement
+    (Array.isArray(ch.inv) ? ch.inv : []).forEach((it) => {
+      const f = it && it.hb && S.hb.get(it.hb);
+      if (f && f.kind === 'item' && it.eq && (!f.attune || it.at)) add(f);
+    });
+    const level = Core.clamp(parseInt(ch.level, 10) || 1, 1, 20);
+    const fromSource = (f, kind) => {
+      if (!f || f.kind !== kind) return;
+      (Array.isArray(f.features) ? f.features : []).slice(0, 40).forEach((ft, k) => {
+        if (ft && Array.isArray(ft.effects) && ft.effects.length && Core.clamp(Number(ft.lvl) || 1, 1, 20) <= level) add({ id: f.id + 'f' + k, kind: 'feature', name: ft.name || 'Feature', effects: ft.effects });
+      });
+    };
+    if (/^hb-/.test(ch.cls || '')) fromSource(S.hb.get(ch.cls.slice(3)), 'class');
+    if (/^hb-/.test(ch.subclass || '')) fromSource(S.hb.get(ch.subclass.slice(3)), 'subclass');
+    return out;
+  }
   function derived(ch) {
     if (!ch || !Data.rules) return null;
     let d = derivedCache.get(ch);

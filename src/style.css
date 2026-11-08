@@ -531,3 +531,5 @@ button.stat:hover { border-color: var(--brass); }
 @media (min-width: 560px) { .inv-add { grid-template-columns: minmax(0, 2fr) 70px minmax(0, 1.4fr) auto; } .inv-add input[id$="Note"], .inv-add .btn { grid-column: auto; } }
 .inv-row .main { flex: 1 1 140px; }
 .inv-row .title { white-space: normal; overflow-wrap: anywhere; }
+.linkish { background: none; border: 0; padding: 0; color: var(--brass-hi); font: inherit; font-weight: 700; cursor: pointer; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+.fx-box { display: grid; gap: 8px; }

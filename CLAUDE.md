@@ -58,6 +58,12 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 - Campaigns: `S.camp` ("main" keeps the original storage). Solo/host storage keys get `:<id>`;
   the server keeps `table-data/campaigns/<id>/`; claude.ai prefixes paths with `camp/<id>/`.
   Presence carries `cp` so people in other campaigns are filtered out.
+- Homebrew (`homebrew/*`, field `kind`): feat, item, spell, monster, subclass, class. `Core.*FromHomebrew`
+  / `homebrewClass` convert them to SRD shapes; `mergeHomebrew()` in store.js builds `Data.rules`, `spells`,
+  `monsters`, `features` from `Data.srd` + homebrew. `featsFor(ch)` = feats + equipped (and attuned) items +
+  homebrew class/subclass features up to the hero's level; their effects go through `Core.derive`.
+- Inventories: hero `ch.inv` [{id, n, q, note, hb, eq, at}] and `ch.coins`; party items `party/*`,
+  party coins `game/state.coins`.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,
   `init/*`, `encounters/*`, `homebrew/*`, `log/*`, `mapchunks/*` (map images in ~190 KB base64 pieces).
 - Content is SRD 5.1 (CC-BY-4.0); keep the attribution in the People and settings sheet.
@@ -68,7 +74,6 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 
 - Let the DM role be handed to another player (today each device picks its own role in
   People and settings; the owner defaults to DM).
-- Homebrew monsters and spells (feats exist: `homebrew/*` docs, effects applied in `Core.derive`).
 - Optional SRD 5.2 (2024 rules) dataset.
 - Fog of war.
 - Self-hosted mode has one shared password and no per-person roles; anyone with it can edit.

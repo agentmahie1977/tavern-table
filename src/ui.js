@@ -443,10 +443,16 @@ const UI = (() => {
     S.hb.forEach((f) => f.kind === 'item' && f.name && names.add(f.name));
     return html`<datalist id="itemNames">${[...names].sort().map((n) => html`<option value="${n}"></option>`)}</datalist>`;
   }
-  function itemRow(it, i, edit, scope) {
-    return html`<div class="row inv-row"><span class="main"><span class="title" style="display:block">${it.n || 'Item'}</span>${it.note ? html`<span class="sub" style="display:block">${it.note}</span>` : ''}</span>
+  function itemRow(it, i, edit, scope, attunedCount) {
+    const magic = it.hb && S.hb.get(it.hb);
+    const isMagic = magic && magic.kind === 'item';
+    const nameBit = isMagic ? html`<button type="button" class="linkish" data-act="hb-read" data-id="${magic.id}">${it.n || magic.name}</button>` : it.n || 'Item';
+    const toggles = isMagic && scope === 'inv' ? html`<div class="chips" style="flex-basis:100%">${html`<button type="button" class="chip" data-act="inv-eq" data-i="${i}" aria-pressed="${!!it.eq}" ${edit ? '' : 'disabled'}>${it.eq ? 'Equipped' : 'Equip'}</button>`}
+      ${magic.attune ? html`<button type="button" class="chip" data-act="inv-at" data-i="${i}" aria-pressed="${!!it.at}" ${edit && (it.at || (attunedCount || 0) < 3) ? '' : 'disabled'}>${it.at ? 'Attuned' : 'Attune'}</button>` : ''}
+      <span class="small muted">${titleCase(magic.rarity || 'uncommon')}${it.eq && (!magic.attune || it.at) ? ' · working' : magic.attune && !it.at ? ' · needs attunement' : ''}</span></div>` : '';
+    return html`<div class="row inv-row"><span class="main"><span class="title" style="display:block">${nameBit}</span>${it.note ? html`<span class="sub" style="display:block">${it.note}</span>` : ''}</span>
       <div class="stepper"><button type="button" data-act="${scope}-q" data-i="${i}" data-d="-1" aria-label="One fewer" ${edit && cleanQty(it.q) > 0 ? '' : 'disabled'}>−</button><span class="val num">${cleanQty(it.q)}</span><button type="button" data-act="${scope}-q" data-i="${i}" data-d="1" aria-label="One more" ${edit ? '' : 'disabled'}>+</button></div>
-      ${edit ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-move" data-i="${i}">${scope === 'inv' ? 'To party' : 'Take'}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="${scope}-del" data-i="${i}" aria-label="Remove ${it.n || 'item'}">${icon('trash')}</button>` : ''}</div>`;
+      ${edit ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-move" data-i="${i}">${scope === 'inv' ? 'To party' : 'Take'}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="${scope}-del" data-i="${i}" aria-label="Remove ${it.n || 'item'}">${icon('trash')}</button>` : ''}${toggles}</div>`;
   }
   function addItemHtml(scope) {
     return html`<div class="inv-add"><input type="text" id="${scope}Name" list="itemNames" maxlength="60" placeholder="Add an item: rope, potion, Longsword…" autocomplete="off" aria-label="Item name">
@@ -458,7 +464,8 @@ const UI = (() => {
     const inv = Array.isArray(ch.inv) ? ch.inv : [];
     return html`<div class="card"><div class="card-title"><h3>Inventory</h3><span class="small muted">${inv.length ? plural(inv.length, 'item') : ''}</span></div>
       ${coinsHtml(ch.coins, 'coin', edit)}
-      ${inv.length ? html`<div class="list">${inv.map((it, i) => itemRow(it, i, edit, 'inv'))}</div>` : html`<p class="hint">Nothing carried yet.</p>`}
+      ${inv.length ? html`<div class="list">${inv.map((it, i) => itemRow(it, i, edit, 'inv', inv.filter((x) => x.at).length))}</div>` : html`<p class="hint">Nothing carried yet.</p>`}
+      ${inv.some((x) => x.at) ? html`<p class="hint">Attuned to ${inv.filter((x) => x.at).length} of 3 items.</p>` : ''}
       ${edit ? addItemHtml('inv') : ''}</div>`;
   }
   function partyItems() {
@@ -628,7 +635,7 @@ const UI = (() => {
       <div class="card"><div class="card-title"><h3>Attacks</h3><span class="small muted">${d.acNote}${d.critMin < 20 ? ` · crits on ${d.critMin}–20` : ''}</span></div>
         ${d.toggles.length ? html`<div class="chips">${d.toggles.map((t) => html`<button type="button" class="chip fx-toggle" data-act="fx" data-k="${t.key}" aria-pressed="${t.on}" ${edit ? '' : 'disabled'}><b>${t.feat}</b> ${t.on ? 'on' : 'off'} · ${t.text.replace(/, when switched on$/, '')}</button>`)}</div>` : ''}
         <div class="list">${attacks}</div></div>
-      ${d.feats.length ? html`<div class="card"><div class="card-title"><h3>Feats</h3></div><div class="list">${d.feats.map((f) => html`<button type="button" class="row tap" data-act="hbfeat" data-id="${f.id}"><span class="main"><span class="title" style="display:block">${f.name}</span><span class="sub" style="display:block">${(f.effects || []).map(Core.describeEffect).filter(Boolean).join(' · ') || 'Description only'}</span></span></button>`)}</div></div>` : ''}
+      ${d.feats.some((f) => (f.kind || 'feat') === 'feat') ? html`<div class="card"><div class="card-title"><h3>Feats</h3></div><div class="list">${d.feats.filter((f) => (f.kind || 'feat') === 'feat').map((f) => html`<button type="button" class="row tap" data-act="hbfeat" data-id="${f.id}"><span class="main"><span class="title" style="display:block">${f.name}</span><span class="sub" style="display:block">${(f.effects || []).map(Core.describeEffect).filter(Boolean).join(' · ') || 'Description only'}</span></span></button>`)}</div></div>` : ''}
       ${spells}
       ${res.length ? html`<div class="card"><div class="card-title"><h3>Resources</h3></div><div class="list">${res}</div></div>` : ''}
       ${invCardHtml(ch, edit)}${itemSuggestions()}
@@ -835,6 +842,22 @@ const UI = (() => {
         Store.Act.patchChar(ch.id, { inv: (Array.isArray(ch.inv) ? ch.inv : []).concat([it]) });
         return;
       }
+      case 'inv-eq':
+      case 'inv-at': {
+        const inv = (Array.isArray(ch.inv) ? ch.inv : []).slice();
+        const i = Number(b.dataset.i);
+        if (!inv[i]) return;
+        const k = a === 'inv-eq' ? 'eq' : 'at';
+        if (k === 'at' && !inv[i].at && inv.filter((x) => x.at).length >= 3) return toast('A hero can be attuned to 3 items at most.', 'warn');
+        inv[i] = Object.assign({}, inv[i], { [k]: inv[i][k] ? 0 : 1 });
+        Store.Act.patchChar(ch.id, { inv });
+        return;
+      }
+      case 'hb-read': {
+        const f = S.hb.get(b.dataset.id);
+        if (f) openFeat(f);
+        return;
+      }
       case 'inv-q':
       case 'inv-del':
       case 'inv-move': {
@@ -984,7 +1007,7 @@ const UI = (() => {
     const rb = d.racial;
     const pbCost = c.method === 'buy' ? Core.pointBuyCost(c.base) : null;
     const asiUsed = Core.ABILS.reduce((s, ab) => s + (Number(c.asi[ab]) || 0), 0);
-    const featIds = (c.feats || []).filter((id) => S.hb.has(id));
+    const featIds = (c.feats || []).filter((id) => S.hb.has(id) && (S.hb.get(id).kind || 'feat') === 'feat');
     const freeFeats = Math.max(0, Math.min(4, Number(c.freeFeats) || 0));
     const featCost = Math.max(0, featIds.length - freeFeats) * 2; // a feat takes the place of one Ability Score Improvement
     const asiLeft = d.asiPoints - asiUsed - featCost;
@@ -1036,7 +1059,8 @@ const UI = (() => {
       const lvTabs = [];
       for (let l = 0; l <= Math.max(maxL, 0); l++) lvTabs.push(html`<button type="button" data-act="spell-lvl" data-l="${l}" aria-pressed="${H.spellLvl === l}">${l === 0 ? 'Cantrips' : ord(l)}</button>`);
       const q = H.spellQ.toLowerCase();
-      const avail = list.filter((s) => s.cls.includes(c.cls) && s.lvl === H.spellLvl && (!q || s.n.toLowerCase().includes(q))).sort((a, b) => a.n.localeCompare(b.n));
+      const listCls = cls.spellList || c.cls; // a homebrew class can borrow another class's list
+      const avail = list.filter((s) => (s.cls.includes(listCls) || s.cls.includes(c.cls)) && s.lvl === H.spellLvl && (!q || s.n.toLowerCase().includes(q))).sort((a, b) => a.n.localeCompare(b.n));
       const guide = [];
       if (d.cast.cantrips) guide.push(`${d.cast.cantrips} cantrips`);
       if (d.cast.known) guide.push(`${d.cast.known} spells known`);
@@ -1087,7 +1111,7 @@ const UI = (() => {
       </div>
       ${spellSec}
       <div class="card"><div class="card-title"><h3>Feats</h3><span class="small muted">${featIds.length} chosen</span></div>
-        ${S.hb.size ? html`<div class="chips">${[...S.hb.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((f) => {
+        ${[...S.hb.values()].some((f) => (f.kind || 'feat') === 'feat') ? html`<div class="chips">${[...S.hb.values()].filter((f) => (f.kind || 'feat') === 'feat').sort((a, b) => String(a.name).localeCompare(String(b.name))).map((f) => {
           const on = featIds.includes(f.id);
           return html`<button type="button" class="chip" data-act="feat" data-id="${f.id}" aria-pressed="${on}" ${on || canAddFeat ? '' : 'disabled'}>${f.name}</button>`;
         })}</div>` : html`<p class="hint">No feats at this table yet. Make them in the Homebrew tab and they show up here.</p>`}
@@ -2738,8 +2762,13 @@ const UI = (() => {
   }
 
   /* ================================================== HOMEBREW */
-  // Feats the table writes itself. Effects are picked from menus, so the sheet can apply them.
-  const HB = { view: 'list', id: null, draft: null };
+  // The table's own feats, magic items, spells, monsters, subclasses and classes. Every field is
+  // bound to a path in the draft (data-path="features.2.name"), so nested lists share one editor.
+  const HB_KINDS = [
+    ['feat', 'Feats', 'feat'], ['item', 'Magic items', 'magic item'], ['spell', 'Spells', 'spell'],
+    ['monster', 'Monsters', 'monster'], ['subclass', 'Subclasses', 'subclass'], ['class', 'Classes', 'class'],
+  ];
+  const HB = { view: 'list', kind: 'feat', id: null, draft: null };
   const FX_LABEL = {
     attack: 'Attack change (to hit, damage)', ability: 'Ability score increase', ac: 'Armor class bonus', speed: 'Speed bonus',
     init: 'Initiative bonus', hpPerLevel: 'Hit points per level', passive: 'Passive Perception bonus', save: 'Saving throw bonus',
@@ -2750,123 +2779,268 @@ const UI = (() => {
     hpPerLevel: { n: 1 }, passive: { n: 5 }, save: { ab: 'all', n: 1 }, saveProf: { ab: 'con' }, skillProf: { sk: 'perception' },
     resource: { name: '', max: 'pb', reset: 'long' }, crit: { min: 19 },
   };
+  const ROW_DEFAULT = {
+    features: () => ({ lvl: '1', name: '', desc: '', effects: [] }),
+    traits: () => ({ n: '', d: '' }),
+    legend: () => ({ n: '', d: '' }),
+    react: () => ({ n: '', d: '' }),
+    actions: () => ({ n: '', d: '', hit: '', dmg: '', dmgType: '', save: '', dc: '', saveOn: 'half', area: '', areaSize: '15' }),
+  };
+  function hbDefault(kind) {
+    const base = { kind, name: '', desc: '' };
+    switch (kind) {
+      case 'item': return Object.assign(base, { rarity: 'uncommon', attune: false, weapon: '', effects: [] });
+      case 'spell': return Object.assign(base, { lvl: '1', school: 'Evocation', cls: [], time: '1 action', range: '60 feet', comp: 'V, S', dur: 'Instantaneous', conc: false, ritual: false, atk: '', save: '', saveOn: 'half', dmg: '', dmgType: '', dmgUp: '', grow: true, heal: '', healUp: '', area: '', areaSize: '20', areaWidth: '5', areaSelf: false, higher: '' });
+      case 'monster': return Object.assign(base, { size: 'Medium', type: 'monstrosity', align: 'unaligned', ac: '12', acn: '', hp: '11', hd: '2d8+2', speed: '30 ft.', abil: ['10', '10', '10', '10', '10', '10'], cr: '1', saves: {}, senses: 'passive Perception 10', lang: '—', vul: '', res: '', imm: '', cimm: '', traits: [], actions: [], legend: [], react: [] });
+      case 'subclass': return Object.assign(base, { cls: 'fighter', features: [] });
+      case 'class': return Object.assign(base, { hd: '8', saves: ['str', 'con'], armor: ['Light'], weapons: 'simple', skillsChoose: '2', skills: [], cast: 'none', castAb: 'int', spellList: 'wizard', cantrips: '0', subLevel: '3', subName: 'Path', features: [] });
+      default: return Object.assign(base, { effects: [] });
+    }
+  }
   const canEditHb = (f) => !S.readOnly && (S.dm || !f || f.by === S.me.pk);
+  const kindName = (k) => (HB_KINDS.find((x) => x[0] === k) || HB_KINDS[0])[2];
+  const getPath = (o, path) => String(path).split('.').reduce((a, k) => (a == null ? a : a[k]), o);
+  function setPath(o, path, v) {
+    const ks = String(path).split('.');
+    const last = ks.pop();
+    const t = ks.reduce((a, k) => (a == null ? a : a[k]), o);
+    if (t && typeof t === 'object') t[last] = v;
+  }
+  const pid = (path) => 'hb-' + String(path).replace(/\./g, '-');
   function fxLines(f) {
     return (f.effects || []).map(Core.describeEffect).filter(Boolean);
+  }
+  // one-line summary of any homebrew entry, for lists
+  function hbSummary(f) {
+    switch (f.kind) {
+      case 'item': return [titleCase(f.rarity || 'uncommon'), f.attune ? 'requires attunement' : '', f.weapon && D.rules && D.rules.weapons[f.weapon] ? D.rules.weapons[f.weapon].n : '', ...fxLines(f)].filter(Boolean).join(' · ');
+      case 'spell': {
+        const sp = D.spellsById && D.spellsById.get('hb-' + f.id);
+        return sp ? `${sp.lvl ? ord(sp.lvl) + '-level ' + sp.school.toLowerCase() : sp.school + ' cantrip'}${sp.dmg ? ' · ' + Object.values(sp.dmg.slot || sp.dmg.char)[0] + ' ' + sp.dmg.type.toLowerCase() : ''}${sp.area ? ` · ${sp.area.size}-ft ${sp.area.shape}` : ''}` : '';
+      }
+      case 'monster': {
+        const m = D.monstersById && D.monstersById.get('hb-' + f.id);
+        return m ? `CR ${Core.crLabel(m.cr)} ${m.size.toLowerCase()} ${m.type} · AC ${m.ac} · HP ${m.hp}` : '';
+      }
+      case 'subclass': {
+        const C = D.rules && D.rules.classes[f.cls];
+        return `${C ? C.n : 'Class'} · ${plural((f.features || []).length, 'feature')}`;
+      }
+      case 'class': return `d${f.hd || 8} hit die · ${f.cast && f.cast !== 'none' ? f.cast + ' caster' : 'no spellcasting'} · ${plural((f.features || []).length, 'feature')}`;
+      default: return fxLines(f).join(' · ') || 'Description only';
+    }
   }
   function openFeat(f) {
     const lines = fxLines(f);
     openText(f.name || 'Feat', (f.desc || '') + (lines.length ? (f.desc ? '\n\n' : '') + 'In Tavern Table:\n• ' + lines.join('\n• ') : ''));
   }
-  function fxFields(e, i) {
+
+  /* ---- form pieces: every input carries data-path */
+  const fText = (path, label, ph, max) => html`<label class="field"><span>${label}</span><input type="text" id="${pid(path)}" data-path="${path}" value="${getPath(HB.draft, path) || ''}" maxlength="${max || 60}" placeholder="${ph || ''}" autocomplete="off"></label>`;
+  const fNum = (path, label, step) => html`<label class="field"><span>${label}</span><input type="number" id="${pid(path)}" data-path="${path}" value="${getPath(HB.draft, path) == null ? '' : getPath(HB.draft, path)}" step="${step || 1}" inputmode="numeric"></label>`;
+  const fArea = (path, label, ph, max) => html`<label class="field"><span>${label}</span><textarea id="${pid(path)}" data-path="${path}" maxlength="${max || 3000}" placeholder="${ph || ''}">${getPath(HB.draft, path) || ''}</textarea></label>`;
+  const fSel = (path, label, opts) => html`<label class="field"><span>${label}</span><select id="${pid(path)}" data-path="${path}">${opts.map(([v, l]) => html`<option value="${v}" ${String(getPath(HB.draft, path)) === String(v) ? 'selected' : ''}>${l}</option>`)}</select></label>`;
+  const fTog = (path, label) => html`<button type="button" class="chip" data-act="hb-tog" data-path="${path}" aria-pressed="${!!getPath(HB.draft, path)}">${label}</button>`;
+  const fChips = (path, label, opts) => {
+    const cur = getPath(HB.draft, path) || [];
+    return html`<div class="field"><span>${label}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-act="hb-chip" data-path="${path}" data-v="${v}" aria-pressed="${cur.includes(v)}">${l}</button>`)}</div></div>`;
+  };
+  const abOpts = () => Core.ABILS.map((a) => [a, Core.ABIL_NAME[a]]);
+  const dmgOpts = (first) => [['', first], ...Core.DAMAGE_TYPES.map((t) => [t, titleCase(t)])];
+  const classOpts = () => Object.keys(D.rules.classes).map((k) => [k, D.rules.classes[k].n]);
+
+  function fxFields(e, path) {
     const R = D.rules;
-    const id = (f) => `hbf-${i}-${f}`;
-    const sel = (f, opts, cur, label) => html`<label class="field"><span>${label}</span><select id="${id(f)}" data-e="${i}" data-f="${f}">${opts.map(([v, l]) => html`<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${l}</option>`)}</select></label>`;
-    const num = (f, cur, label, step) => html`<label class="field"><span>${label}</span><input type="number" id="${id(f)}" data-e="${i}" data-f="${f}" value="${cur}" step="${step || 1}" inputmode="numeric"></label>`;
-    const abOpts = Core.ABILS.map((a) => [a, Core.ABIL_NAME[a]]);
+    const p = (f) => path + '.' + f;
     switch (e.t) {
       case 'attack':
-        return html`<div class="grid2">${sel('when', [['toggle', 'Switch on the sheet'], ['always', 'Always on']], e.when, 'When')}${sel('filter', Core.ATTACK_FILTERS.map((f) => [f, f === 'any' ? 'All weapon attacks' : titleCase(f) + ' attacks']), e.filter, 'Applies to')}</div>
-          <div class="grid3">${num('hit', e.hit || 0, 'To hit')}<label class="field"><span>Extra damage</span><input type="text" id="${id('dmg')}" data-e="${i}" data-f="dmg" value="${e.dmg || ''}" placeholder="3 or 1d6" autocomplete="off"></label>${sel('dmgType', [['', 'Weapon’s type'], ...Core.DAMAGE_TYPES.map((t) => [t, titleCase(t)])], e.dmgType || '', 'Damage type')}</div>`;
-      case 'ability':
-        return html`<div class="grid2">${sel('ab', abOpts, e.ab, 'Ability')}${num('n', e.n, 'Increase')}</div>`;
-      case 'ac': case 'speed': case 'init': case 'hpPerLevel': case 'passive':
-        return num('n', e.n, 'Amount', e.t === 'speed' ? 5 : 1);
-      case 'save':
-        return html`<div class="grid2">${sel('ab', [['all', 'All saves'], ...abOpts], e.ab, 'Saving throw')}${num('n', e.n, 'Bonus')}</div>`;
-      case 'saveProf':
-        return sel('ab', abOpts, e.ab, 'Saving throw');
-      case 'skillProf':
-        return sel('sk', Object.keys(R.skills).map((k) => [k, R.skills[k].n]), e.sk, 'Skill');
+        return html`<div class="grid2">${fSel(p('when'), 'When', [['toggle', 'Switch on the sheet'], ['always', 'Always on']])}${fSel(p('filter'), 'Applies to', Core.ATTACK_FILTERS.map((f) => [f, f === 'any' ? 'All weapon attacks' : f === 'item' ? 'This item’s own weapon' : titleCase(f) + ' attacks']))}</div>
+          <div class="grid3">${fNum(p('hit'), 'To hit')}${fText(p('dmg'), 'Extra damage', '3 or 1d6', 20)}${fSel(p('dmgType'), 'Damage type', dmgOpts('Weapon’s type'))}</div>`;
+      case 'ability': return html`<div class="grid2">${fSel(p('ab'), 'Ability', abOpts())}${fNum(p('n'), 'Increase')}</div>`;
+      case 'ac': case 'speed': case 'init': case 'hpPerLevel': case 'passive': return fNum(p('n'), 'Amount', e.t === 'speed' ? 5 : 1);
+      case 'save': return html`<div class="grid2">${fSel(p('ab'), 'Saving throw', [['all', 'All saves'], ...abOpts()])}${fNum(p('n'), 'Bonus')}</div>`;
+      case 'saveProf': return fSel(p('ab'), 'Saving throw', abOpts());
+      case 'skillProf': return fSel(p('sk'), 'Skill', Object.keys(R.skills).map((k) => [k, R.skills[k].n]));
       case 'resource':
-        return html`<div class="grid3"><label class="field"><span>Name</span><input type="text" id="${id('name')}" data-e="${i}" data-f="name" value="${e.name || ''}" maxlength="40" placeholder="Uses" autocomplete="off"></label>
-          ${sel('max', [['pb', 'Proficiency bonus'], ...Core.ABILS.map((a) => [a, Core.ABIL_SHORT[a] + ' modifier']), ...[1, 2, 3, 4, 5].map((n) => [String(n), String(n)])], e.max, 'How many')}
-          ${sel('reset', [['long', 'Long rest'], ['short', 'Short rest']], e.reset, 'Comes back after')}</div>`;
-      case 'crit':
-        return sel('min', [['19', '19–20'], ['18', '18–20']], e.min, 'Critical hit on');
+        return html`<div class="grid3">${fText(p('name'), 'Name', 'Uses', 40)}${fSel(p('max'), 'How many', [['pb', 'Proficiency bonus'], ...Core.ABILS.map((a) => [a, Core.ABIL_SHORT[a] + ' modifier']), ...[1, 2, 3, 4, 5].map((n) => [String(n), String(n)])])}${fSel(p('reset'), 'Comes back after', [['long', 'Long rest'], ['short', 'Short rest']])}</div>`;
+      case 'crit': return fSel(p('min'), 'Critical hit on', [['19', '19–20'], ['18', '18–20']]);
     }
     return '';
   }
-  function hbEditHtml() {
+  // the effects list at a path (a feat, an item, or one class feature)
+  function fxEditor(path, hint) {
+    const list = getPath(HB.draft, path) || [];
+    return html`<div class="fx-box">${list.map((e, i) => html`<div class="fx-row"><div class="card-title"><b>${FX_LABEL[e.t] || e.t}</b><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="hb-del" data-path="${path}" data-i="${i}" aria-label="Remove this effect">${icon('trash')}</button></div>
+        ${fxFields(e, path + '.' + i)}<p class="hint fx-sum">${Core.describeEffect(e)}</p></div>`)}
+      <div class="expr-row"><select id="${pid(path)}-type" aria-label="Effect to add">${Core.EFFECT_TYPES.map((t) => html`<option value="${t}">${FX_LABEL[t]}</option>`)}</select><button type="button" class="btn btn-sm" data-act="hb-fx-add" data-path="${path}">${icon('plus')} Add effect</button></div>
+      ${hint ? html`<p class="hint">${hint}</p>` : ''}</div>`;
+  }
+  // a list of rows (features, traits, actions) with add/remove
+  function rowsEditor(path, title, addLabel, rowFn) {
+    const list = getPath(HB.draft, path) || [];
+    return html`<div class="card"><div class="card-title"><h3>${title}</h3><button type="button" class="btn btn-sm" data-act="hb-row-add" data-path="${path}">${icon('plus')} ${addLabel}</button></div>
+      ${list.length ? list.map((r, i) => html`<div class="fx-row"><div class="card-title"><b>${r.name || r.n || addLabel}</b><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="hb-del" data-path="${path}" data-i="${i}" aria-label="Remove">${icon('trash')}</button></div>${rowFn(path + '.' + i, r)}</div>`) : html`<p class="hint">None yet.</p>`}</div>`;
+  }
+  const nameDesc = (p) => html`${fText(p + '.n', 'Name', '', 60)}${fArea(p + '.d', 'Description', 'In your own words', 2000)}`;
+  const featureRow = (p) => html`<div class="grid2">${fNum(p + '.lvl', 'Level')}${fText(p + '.name', 'Name', '', 60)}</div>${fArea(p + '.desc', 'Description', 'What it does, in your own words', 3000)}${fxEditor(p + '.effects', 'Effects switch on when the hero reaches this level.')}`;
+
+  function hbFormHtml() {
     const f = HB.draft;
+    const R = D.rules;
+    const head = html`<div class="card">${fText('name', 'Name', `Your ${kindName(f.kind)}’s name`, 60)}${fArea('desc', 'Description (shown in the app)', 'In your own words', f.kind === 'spell' ? 6000 : 3000)}</div>`;
+    switch (f.kind) {
+      case 'item':
+        return html`${head}<div class="card"><div class="grid2">${fSel('rarity', 'Rarity', ['common', 'uncommon', 'rare', 'very rare', 'legendary', 'artifact'].map((r) => [r, titleCase(r)]))}${fSel('weapon', 'It’s a weapon', [['', 'Not a weapon'], ...Object.keys(R.weapons).map((k) => [k, R.weapons[k].n])])}</div>
+          <div class="chips">${fTog('attune', 'Requires attunement')}</div>
+          <p class="hint">An item’s effects work while the hero has it equipped (and attuned, if it needs attunement). A weapon item gets its own attack row on the sheet; use “This item’s own weapon” for bonuses that only apply to it.</p></div>
+          <div class="card"><div class="card-title"><h3>What it does in the app</h3></div>${fxEditor('effects')}</div>`;
+      case 'spell':
+        return html`${head}<div class="card"><div class="grid3">${fSel('lvl', 'Level', [['0', 'Cantrip'], ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [String(n), ord(n)])])}${fSel('school', 'School', Core.SCHOOLS.map((x) => [x, x]))}${fText('time', 'Casting time', '1 action', 40)}</div>
+          <div class="grid3">${fText('range', 'Range', '60 feet', 40)}${fText('comp', 'Components', 'V, S, M', 60)}${fText('dur', 'Duration', 'Instantaneous', 60)}</div>
+          <div class="chips">${fTog('conc', 'Concentration')}${fTog('ritual', 'Ritual')}</div>
+          ${fChips('cls', 'Spell lists it’s on', classOpts())}</div>
+          <div class="card"><div class="card-title"><h3>What the app rolls</h3></div>
+          <div class="grid3">${fSel('atk', 'Spell attack', [['', 'No attack roll'], ['melee', 'Melee'], ['ranged', 'Ranged']])}${fSel('save', 'Saving throw', [['', 'No save'], ...abOpts()])}${fSel('saveOn', 'On a successful save', [['half', 'Half damage'], ['none', 'No effect']])}</div>
+          <div class="grid3">${fText('dmg', 'Damage', '3d8', 30)}${fSel('dmgType', 'Damage type', dmgOpts('Force'))}${f.lvl === '0' ? html`<div class="field"><span>Gets stronger</span><div class="chips">${fTog('grow', 'At levels 5, 11, 17')}</div></div>` : fText('dmgUp', 'Extra per slot above', '1d8', 20)}</div>
+          <div class="grid2">${fText('heal', 'Healing', '1d8+MOD', 30)}${f.lvl === '0' ? '' : fText('healUp', 'Extra healing per slot above', '1d8', 20)}</div>
+          <div class="grid3">${fSel('area', 'Area', [['', 'No area'], ['circle', 'Circle (radius)'], ['cone', 'Cone'], ['cube', 'Square / cube'], ['line', 'Line']])}${fNum('areaSize', 'Size (ft)', 5)}${f.area === 'line' ? fNum('areaWidth', 'Width (ft)', 5) : html`<div class="field"><span>From the caster</span><div class="chips">${fTog('areaSelf', 'Starts at the caster')}</div></div>`}</div>
+          <p class="hint">Write MOD for the caster’s spellcasting modifier. Leave a box empty if the spell doesn’t do that.</p>
+          ${fArea('higher', 'At higher levels (text)', 'Optional', 2000)}</div>`;
+      case 'monster':
+        return html`${head}<div class="card"><div class="grid3">${fSel('size', 'Size', Core.SIZES.map((x) => [x, x]))}${fText('type', 'Type', 'beast, undead, fey…', 40)}${fText('align', 'Alignment', 'unaligned', 40)}</div>
+          <div class="grid3">${fNum('ac', 'Armor class')}${fText('acn', 'Armor note', 'natural armor', 60)}${fSel('cr', 'Challenge', Core.CR_LIST.map((c) => [String(c), Core.crLabel(c) + ' (' + Core.CR_XP[Core.CR_LIST.indexOf(c)].toLocaleString() + ' XP)']))}</div>
+          <div class="grid3">${fNum('hp', 'Hit points')}${fText('hd', 'Hit dice', '4d8+4', 20)}${fText('speed', 'Speed', '30 ft., fly 60 ft.', 80)}</div>
+          <div class="abil-grid">${Core.ABILS.map((a, i) => fNum('abil.' + i, Core.ABIL_SHORT[a]))}</div>
+          <div class="label">Saving throw bonuses (leave empty if none)</div><div class="abil-grid">${Core.ABILS.map((a) => fNum('saves.' + a, Core.ABIL_SHORT[a]))}</div>
+          <div class="grid2">${fText('senses', 'Senses', 'darkvision 60 ft., passive Perception 12', 120)}${fText('lang', 'Languages', '—', 120)}</div>
+          <div class="grid2">${fText('res', 'Resistances', '', 160)}${fText('imm', 'Immunities', '', 160)}</div>
+          <div class="grid2">${fText('vul', 'Vulnerabilities', '', 120)}${fText('cimm', 'Condition immunities', '', 160)}</div></div>
+          ${rowsEditor('traits', 'Traits', 'Trait', nameDesc)}
+          ${rowsEditor('actions', 'Actions', 'Action', (p) => html`${nameDesc(p)}<div class="grid3">${fNum(p + '.hit', 'To hit (empty: none)')}${fText(p + '.dmg', 'Damage', '2d6+3', 30)}${fSel(p + '.dmgType', 'Damage type', dmgOpts('None'))}</div>
+            <div class="grid3">${fSel(p + '.save', 'Saving throw', [['', 'No save'], ...abOpts()])}${fNum(p + '.dc', 'DC')}${fSel(p + '.saveOn', 'On a success', [['half', 'Half damage'], ['none', 'No effect']])}</div>
+            <div class="grid2">${fSel(p + '.area', 'Area', [['', 'No area'], ['circle', 'Circle'], ['cone', 'Cone'], ['cube', 'Square'], ['line', 'Line']])}${fNum(p + '.areaSize', 'Size (ft)', 5)}</div>`)}
+          ${rowsEditor('legend', 'Legendary actions', 'Legendary action', nameDesc)}
+          ${rowsEditor('react', 'Reactions', 'Reaction', nameDesc)}`;
+      case 'subclass':
+        return html`${head}<div class="card">${fSel('cls', 'For the class', classOpts().filter(([k]) => k !== 'hb-' + HB.id))}
+          <p class="hint">Heroes of that class can pick it in the hero builder at the class’s usual subclass level.</p></div>
+          ${rowsEditor('features', 'Features', 'Feature', featureRow)}`;
+      case 'class':
+        return html`${head}<div class="card"><div class="grid3">${fSel('hd', 'Hit die', [['6', 'd6'], ['8', 'd8'], ['10', 'd10'], ['12', 'd12']])}${fSel('saves.0', 'Saving throw 1', abOpts())}${fSel('saves.1', 'Saving throw 2', abOpts())}</div>
+          ${fChips('armor', 'Armor training', [['Light', 'Light'], ['Medium', 'Medium'], ['Heavy', 'Heavy'], ['Shield', 'Shields']])}
+          <div class="grid2">${fSel('weapons', 'Weapons', [['simple', 'Simple weapons'], ['martial', 'Simple and martial'], ['none', 'None']])}${fNum('skillsChoose', 'Skills to choose')}</div>
+          ${fChips('skills', 'Skills to choose from', Object.keys(R.skills).map((k) => [k, R.skills[k].n]))}</div>
+          <div class="card"><div class="card-title"><h3>Spellcasting</h3></div><div class="grid3">${fSel('cast', 'Spellcaster', [['none', 'None'], ['full', 'Full (like a wizard)'], ['half', 'Half (like a paladin)'], ['third', 'One-third'], ['pact', 'Pact (like a warlock)']])}${fSel('castAb', 'Ability', abOpts())}${fNum('cantrips', 'Cantrips known')}</div>
+          ${fSel('spellList', 'Spell list', [...Object.keys(R.classes).filter((k) => !/^hb-/.test(k) && R.classes[k].cast).map((k) => [k, R.classes[k].n + ' spells']), ['own', 'Only spells tagged with this class']])}</div>
+          <div class="card"><div class="card-title"><h3>Subclass</h3></div><div class="grid2">${fNum('subLevel', 'Chosen at level')}${fText('subName', 'Called', 'Path, Oath, Circle…', 40)}</div><p class="hint">Make subclasses for it in the Subclasses tab.</p></div>
+          ${rowsEditor('features', 'Class features', 'Feature', featureRow)}
+          <p class="hint">Proficiency bonus, Ability Score Improvements (levels 4, 8, 12, 16, 19) and spell slots follow the standard tables.</p>`;
+      default:
+        return html`${head}<div class="card"><div class="card-title"><h3>What the app does</h3></div>${fxEditor('effects', 'Use “Switch on the sheet” for anything a player chooses to use on a turn: the hero sheet gets an on/off button and the rolls change while it’s on. Things the app can’t track, like reactions or cover, go in the description.')}</div>`;
+    }
+  }
+  function hbEditHtml() {
     const existing = HB.id && S.hb.get(HB.id);
-    return html`<div class="panel-head"><button type="button" class="btn btn-ghost btn-sm" data-act="hb-back">${icon('back')} Homebrew</button><h2>${HB.id ? 'Edit feat' : 'New feat'}</h2></div>
-      <div class="card"><label class="field"><span>Name</span><input type="text" id="hbName" value="${f.name}" maxlength="60" placeholder="Your feat’s name" autocomplete="off"></label>
-        <label class="field"><span>Description (shown on the sheet)</span><textarea id="hbDesc" maxlength="3000" placeholder="What it does, in your words">${f.desc}</textarea></label></div>
-      <div class="card"><div class="card-title"><h3>What the app does</h3></div>
-        ${f.effects.length ? f.effects.map((e, i) => html`<div class="fx-row"><div class="card-title"><b>${FX_LABEL[e.t] || e.t}</b><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="hb-fx-del" data-i="${i}" aria-label="Remove this effect">${icon('trash')}</button></div>
-          ${fxFields(e, i)}<p class="hint fx-sum">${Core.describeEffect(e)}</p></div>`) : html`<p class="hint">No effects yet: the feat will show its description only.</p>`}
-        <div class="expr-row"><select id="hbAddType" aria-label="Effect to add">${Core.EFFECT_TYPES.map((t) => html`<option value="${t}">${FX_LABEL[t]}</option>`)}</select><button type="button" class="btn" data-act="hb-fx-add">${icon('plus')} Add</button></div>
-        <p class="hint">Use “Switch on the sheet” for anything a player chooses to use on a turn: the hero sheet gets an on/off button and the rolls change while it’s on. Things the app can’t track, like reactions or cover, go in the description.</p></div>
-      <div class="save-bar">${existing && canEditHb(existing) ? html`<button type="button" class="btn btn-danger" data-act="hb-del">${icon('trash')} Delete</button>` : ''}<span class="grow"></span>
-        <button type="button" class="btn btn-ghost" data-act="hb-back">Cancel</button><button type="button" class="btn btn-primary" data-act="hb-save">${icon('check')} Save feat</button></div>`;
+    return html`<div class="panel-head"><button type="button" class="btn btn-ghost btn-sm" data-act="hb-back">${icon('back')} Homebrew</button><h2>${HB.id ? 'Edit ' : 'New '}${kindName(HB.draft.kind)}</h2></div>
+      ${hbFormHtml()}
+      <div class="save-bar">${existing && canEditHb(existing) ? html`<button type="button" class="btn btn-danger" data-act="hb-remove">${icon('trash')} Delete</button>` : ''}<span class="grow"></span>
+        <button type="button" class="btn btn-ghost" data-act="hb-back">Cancel</button><button type="button" class="btn btn-primary" data-act="hb-save">${icon('check')} Save</button></div>`;
   }
   function hbRender() {
     if (!rulesReady()) return html`<div class="empty"><h3>Opening the rulebook…</h3></div>`;
     if (HB.view === 'edit' && HB.draft) return hbEditHtml();
-    const list = [...S.hb.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    const usedBy = (id) => [...S.chars.values()].filter((c) => (c.feats || []).includes(id)).map((c) => c.name || 'Hero');
-    return html`<div class="panel-head"><h2>Homebrew</h2>${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} New feat</button>`}</div>
-      ${list.length ? html`<div class="list">${list.map((f) => {
-        const users = usedBy(f.id);
-        const lines = fxLines(f);
-        return html`<div class="card"><div class="card-title"><h3>${f.name || 'Untitled feat'}</h3>${canEditHb(f) ? html`<button type="button" class="btn btn-sm" data-act="hb-edit" data-id="${f.id}">${icon('edit')} Edit</button>` : ''}</div>
-          ${f.desc ? html`<p class="prose">${f.desc}</p>` : ''}
-          ${lines.length ? html`<div class="chips">${lines.map((l) => html`<span class="badge brass">${l}</span>`)}</div>` : ''}
-          <p class="hint">${users.length ? 'Taken by ' + users.join(', ') : 'No hero has taken this yet. Add it in the hero builder.'}</p></div>`;
-      })}</div>` : html`<div class="empty"><h3>No homebrew yet</h3><p class="hint">Write your table’s own feats. Pick what each one does from a menu (bonuses, attack trade-offs, limited uses) and hero sheets apply it for you, with on/off buttons for anything used by choice.</p>
-        ${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} Make a feat</button>`}</div>`}`;
+    const kind = HB.kind;
+    const list = [...S.hb.values()].filter((f) => (f.kind || 'feat') === kind).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const count = (k) => [...S.hb.values()].filter((f) => (f.kind || 'feat') === k).length;
+    const where = { feat: 'Heroes take feats in the hero builder.', item: 'Add items to a hero’s inventory by name, then equip them on the sheet.', spell: 'Spells appear in the hero builder for the classes you tag, and on spell cards.', monster: 'Monsters appear in the Encounter tab’s bestiary.', subclass: 'Subclasses appear in the hero builder.', class: 'Classes appear in the hero builder.' }[kind];
+    return html`<div class="panel-head"><h2>Homebrew</h2>${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} New ${kindName(kind)}</button>`}</div>
+      <div class="chips">${HB_KINDS.map(([k, label]) => html`<button type="button" class="chip" data-act="hb-kind" data-k="${k}" aria-pressed="${k === kind}">${label}${count(k) ? ` · ${count(k)}` : ''}</button>`)}</div>
+      ${list.length ? html`<div class="list">${list.map((f) => html`<div class="row"><span class="main"><span class="title" style="display:block">${f.name || 'Untitled'}</span><span class="sub" style="display:block">${hbSummary(f)}</span></span>
+          ${canEditHb(f) ? html`<button type="button" class="btn btn-sm" data-act="hb-edit" data-id="${f.id}">${icon('edit')} Edit</button>` : ''}</div>`)}</div>`
+        : html`<div class="empty"><h3>No homebrew ${kindName(kind)}s yet</h3><p class="hint">Write your table’s own and pick what they do from menus, so the app can apply them.</p>${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} Make a ${kindName(kind)}</button>`}</div>`}
+      <p class="hint">${where} Everything here belongs to this campaign and is shared with everyone at the table.</p>`;
   }
   function hbAct(a, b) {
     const f = HB.draft;
+    const path = b && b.dataset.path;
     switch (a) {
+      case 'hb-kind':
+        HB.kind = b.dataset.k;
+        break;
       case 'hb-new':
         HB.view = 'edit';
         HB.id = null;
-        HB.draft = { name: '', desc: '', effects: [] };
+        HB.draft = hbDefault(HB.kind);
         break;
       case 'hb-edit': {
         const doc = S.hb.get(b.dataset.id);
         if (!doc) return;
         HB.view = 'edit';
         HB.id = doc.id;
-        HB.draft = { name: doc.name || '', desc: doc.desc || '', effects: Store.clone(doc.effects || []) };
+        HB.draft = Object.assign(hbDefault(doc.kind || 'feat'), Store.clone(doc));
+        delete HB.draft.id;
         break;
       }
       case 'hb-back':
         HB.view = 'list';
         HB.draft = null;
         break;
-      case 'hb-fx-add': {
-        const t = ($('#hbAddType') || {}).value;
-        if (!f || !FX_DEFAULT[t]) return;
-        if (f.effects.length >= 20) return toast('That’s the most effects one feat can have.', 'warn');
-        f.effects.push(Object.assign({ t }, Store.clone(FX_DEFAULT[t])));
+      case 'hb-tog':
+        if (f) setPath(f, path, !getPath(f, path));
+        break;
+      case 'hb-chip': {
+        if (!f) return;
+        const cur = (getPath(f, path) || []).slice();
+        const i = cur.indexOf(b.dataset.v);
+        if (i >= 0) cur.splice(i, 1);
+        else cur.push(b.dataset.v);
+        setPath(f, path, cur);
         break;
       }
-      case 'hb-fx-del':
-        if (f) f.effects.splice(Number(b.dataset.i), 1);
+      case 'hb-fx-add': {
+        const t = ($('#' + pid(path) + '-type') || {}).value;
+        const list = f && getPath(f, path);
+        if (!Array.isArray(list) || !FX_DEFAULT[t]) return;
+        if (list.length >= 20) return toast('That’s the most effects one entry can have.', 'warn');
+        list.push(Object.assign({ t }, Store.clone(FX_DEFAULT[t])));
         break;
+      }
+      case 'hb-row-add': {
+        const list = f && getPath(f, path);
+        const key = String(path).split('.').pop();
+        if (!Array.isArray(list) || !ROW_DEFAULT[key]) return;
+        if (list.length >= 40) return toast('That list is full.', 'warn');
+        list.push(ROW_DEFAULT[key]());
+        break;
+      }
+      case 'hb-del': {
+        const list = f && getPath(f, path);
+        if (Array.isArray(list)) list.splice(Number(b.dataset.i), 1);
+        break;
+      }
       case 'hb-save': {
         if (!f) return;
         const name = String(f.name || '').trim().slice(0, 60);
         if (!name) {
-          toast('Give the feat a name first.', 'warn');
-          const n = $('#hbName');
+          toast('Give it a name first.', 'warn');
+          const n = $('#hb-name');
           if (n) n.focus();
           return;
         }
         const existing = HB.id && S.hb.get(HB.id);
-        Store.Act.saveHomebrew(HB.id, { kind: 'feat', name, desc: String(f.desc || '').slice(0, 3000), effects: f.effects.slice(0, 20), by: existing ? existing.by : S.me.pk });
-        toast(`Saved “${name}”. Heroes can take it in the hero builder.`);
-        HB.view = 'list';
-        HB.draft = null;
+        const doc = Object.assign(Store.clone(f), { name, desc: String(f.desc || '').slice(0, 6000), by: existing ? existing.by : S.me.pk });
+        if (sizeOk(doc)) {
+          Store.Act.saveHomebrew(HB.id, doc);
+          toast(`Saved “${name}”.`);
+          HB.view = 'list';
+          HB.draft = null;
+        }
         break;
       }
-      case 'hb-del': {
+      case 'hb-remove': {
         const doc = S.hb.get(HB.id);
         if (!doc) return;
-        return confirmSheet(`Delete “${doc.name}”?`, 'Heroes who took it lose its effects. This can’t be undone.', 'Delete feat', () => {
+        return confirmSheet(`Delete “${doc.name}”?`, 'It’s removed for everyone in this campaign. Heroes who used it lose its effects. This can’t be undone.', 'Delete', () => {
           Store.Act.deleteHomebrew(doc.id);
           HB.view = 'list';
           HB.draft = null;
@@ -2876,22 +3050,26 @@ const UI = (() => {
       default:
         return;
     }
+    const keep = panels.homebrew.el.scrollTop;
     renderPanel('homebrew', true);
-    panels.homebrew.el.scrollTop = a === 'hb-fx-add' ? panels.homebrew.el.scrollTop : 0;
+    panels.homebrew.el.scrollTop = ['hb-kind', 'hb-new', 'hb-edit', 'hb-back', 'hb-save'].includes(a) ? 0 : keep;
   }
-  // typing updates the draft only; the summary lines refresh when a field is left (change)
+  function sizeOk(doc) {
+    if (JSON.stringify(doc).length < 250000) return true;
+    toast('That’s too much text for one entry. Shorten the descriptions a little.', 'warn');
+    return false;
+  }
+  // typing updates the draft only; summaries and dependent fields refresh when a field is left (change)
   function hbInput(t) {
-    const f = HB.draft;
-    if (!f) return;
-    if (t.id === 'hbName') f.name = t.value;
-    else if (t.id === 'hbDesc') f.desc = t.value;
-    else if (t.dataset.e !== undefined && f.effects[Number(t.dataset.e)]) f.effects[Number(t.dataset.e)][t.dataset.f] = t.value;
+    if (HB.draft && t.dataset.path) setPath(HB.draft, t.dataset.path, t.value);
   }
   function hbChange(t) {
     hbInput(t);
-    if (t.dataset.e !== undefined) {
+    if (t.dataset.path) {
       panels.homebrew.typing = false;
+      const keep = panels.homebrew.el.scrollTop;
       renderPanel('homebrew', true);
+      panels.homebrew.el.scrollTop = keep;
     }
   }
 

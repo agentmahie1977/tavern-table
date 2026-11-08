@@ -239,7 +239,7 @@ const Core = (() => {
   /* ------------------------------------------- homebrew feat effects */
   // A homebrew feat is {id, name, desc, effects:[...]}; shared data, so every field is checked here.
   const EFFECT_TYPES = ['attack', 'ability', 'ac', 'speed', 'init', 'hpPerLevel', 'passive', 'save', 'saveProf', 'skillProf', 'resource', 'crit'];
-  const ATTACK_FILTERS = ['any', 'melee', 'ranged', 'heavy', 'finesse', 'light', 'thrown', 'unarmed', 'spell'];
+  const ATTACK_FILTERS = ['any', 'melee', 'ranged', 'heavy', 'finesse', 'light', 'thrown', 'unarmed', 'spell', 'item'];
   const DAMAGE_TYPES = ['acid', 'bludgeoning', 'cold', 'fire', 'force', 'lightning', 'necrotic', 'piercing', 'poison', 'psychic', 'radiant', 'slashing', 'thunder'];
   const int = (v, lo, hi) => clamp(Math.round(Number(v) || 0), lo, hi);
   function cleanDmg(src) {
@@ -255,7 +255,7 @@ const Core = (() => {
       if (!f || !Array.isArray(f.effects)) return;
       f.effects.slice(0, 20).forEach((e, i) => {
         if (!e || !EFFECT_TYPES.includes(e.t)) return;
-        out.push(Object.assign({}, e, { key: String(f.id) + '_' + i, feat: String(f.name || 'Feat').slice(0, 60) }));
+        out.push(Object.assign({}, e, { key: String(f.id) + '_' + i, feat: String(f.name || 'Feat').slice(0, 60), src: String(f.id) }));
       });
     });
     return out;
@@ -271,7 +271,7 @@ const Core = (() => {
   // a short plain-language line for an effect (sheet, editor preview)
   function describeEffect(e) {
     const sg = (n) => (n >= 0 ? '+' : MINUS) + Math.abs(n);
-    const filt = (f) => (f === 'any' || !f ? 'weapon attacks' : f === 'spell' ? 'spell attacks' : f + ' attacks');
+    const filt = (f) => (f === 'any' || !f ? 'weapon attacks' : f === 'spell' ? 'spell attacks' : f === 'item' ? 'this item’s attacks' : f + ' attacks');
     switch (e.t) {
       case 'attack': {
         const bits = [];
@@ -293,6 +293,136 @@ const Core = (() => {
       case 'crit': return 'Critical hit on ' + int(e.min, 15, 20) + '–20';
     }
     return '';
+  }
+
+  /* ------------------------------- homebrew classes, spells, monsters */
+  // Turn homebrew docs (shared data: check everything) into the same shapes as the SRD data.
+  const SCHOOLS = ['Abjuration', 'Conjuration', 'Divination', 'Enchantment', 'Evocation', 'Illusion', 'Necromancy', 'Transmutation'];
+  const SIZES = ['Tiny', 'Small', 'Medium', 'Large', 'Huge', 'Gargantuan'];
+  const SHAPES = ['circle', 'cone', 'cube', 'line'];
+  const CR_LIST = [0, 0.125, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
+  const CR_XP = [10, 25, 50, 100, 200, 450, 700, 1100, 1800, 2300, 2900, 3900, 5000, 5900, 7200, 8400, 10000, 11500, 13000, 15000, 18000, 20000, 22000, 25000, 33000, 41000, 50000, 62000, 75000, 90000, 105000, 120000, 135000, 155000];
+  const txt = (v, n) => String(v == null ? '' : v).slice(0, n || 200);
+  const titleWord = (w) => String(w || '').replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+  // a dice expression, optionally with MOD (spellcasting modifier); '' if it isn't one
+  function cleanSpellDice(src) {
+    const v = String(src || '').replace(/\s+/g, '');
+    if (!v || v.length > 40 || !parseDice(v.replace(/MOD/gi, '0'))) return '';
+    return v.replace(/mod/gi, 'MOD');
+  }
+  // multiply every dice count and number in an expression by k (2d6+1 x2 -> 4d6+2)
+  function scaleExpr(expr, k) {
+    const t = parseDice(expr);
+    if (!t || k <= 0) return '';
+    return termsToExpr(t.map((x) => (x.value !== undefined ? Object.assign({}, x, { value: x.value * k }) : Object.assign({}, x, { count: Math.min(100, x.count * k), keep: null }))));
+  }
+  function featureLevels(features, prefix) {
+    const out = {};
+    (Array.isArray(features) ? features : []).slice(0, 40).forEach((ft, k) => {
+      const l = String(int(ft && ft.lvl, 1, 20));
+      (out[l] = out[l] || []).push(prefix + '-' + k);
+    });
+    return out;
+  }
+  function homebrewClass(f, R) {
+    if (!f || !R || !R.classes.wizard) return null;
+    const castType = ['full', 'half', 'third', 'pact'].includes(f.cast) ? f.cast : 'none';
+    const tableOf = (id) => R.classes[id].levels;
+    const zero = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const slotsAt = (l) => {
+      if (castType === 'full') return tableOf('wizard')[l - 1].slots.slice();
+      if (castType === 'half') return (tableOf('paladin')[l - 1].slots || zero).slice();
+      if (castType === 'pact') return tableOf('warlock')[l - 1].slots.slice();
+      if (castType === 'third') return Math.floor(l / 3) > 0 ? tableOf('wizard')[Math.floor(l / 3) - 1].slots.slice() : zero.slice();
+      return zero.slice();
+    };
+    const feats = featureLevels(f.features, 'hb-' + f.id);
+    const weapons = Object.keys(R.weapons).filter((k) => (f.weapons === 'martial' ? true : f.weapons === 'simple' ? R.weapons[k].cat === 'Simple' : false));
+    const saves = (Array.isArray(f.saves) ? f.saves : []).filter((a) => ABILS.includes(a)).slice(0, 2);
+    const levels = [];
+    for (let l = 1; l <= 20; l++) {
+      levels.push({ lvl: l, pb: proficiencyBonus(l), asi: [4, 8, 12, 16, 19].filter((x) => x <= l).length, feats: feats[String(l)] || [], slots: slotsAt(l), cantrips: castType === 'none' ? 0 : int(f.cantrips, 0, 10), cs: {} });
+    }
+    return {
+      n: txt(f.name, 60) || 'Homebrew class', hd: [6, 8, 10, 12].includes(Number(f.hd)) ? Number(f.hd) : 8, saves,
+      skills: { choose: int(f.skillsChoose, 0, 6), from: (Array.isArray(f.skills) ? f.skills : []).filter((k) => R.skills[k]) },
+      weapons, armor: (Array.isArray(f.armor) ? f.armor : []).filter((a) => ['Light', 'Medium', 'Heavy', 'Shield'].includes(a)),
+      cast: castType === 'none' ? null : ABILS.includes(f.castAb) ? f.castAb : 'int', castType, pact: castType === 'pact',
+      spellList: f.spellList && f.spellList !== 'own' ? String(f.spellList) : null, subStart: int(f.subLevel || 3, 1, 20), subFlavor: txt(f.subName, 40) || 'Subclass',
+      levels, subs: [], hb: true, d: txt(f.desc, 3000),
+    };
+  }
+  function spellFromHomebrew(f) {
+    const lvl = int(f.lvl, 0, 9);
+    const sp = {
+      i: 'hb-' + f.id, n: txt(f.name, 60) || 'Homebrew spell', lvl, school: SCHOOLS.includes(f.school) ? f.school : 'Evocation',
+      time: txt(f.time, 60) || '1 action', range: txt(f.range, 60) || 'Self', comp: txt(f.comp, 60) || 'V, S', dur: txt(f.dur, 60) || 'Instantaneous',
+      cls: (Array.isArray(f.cls) ? f.cls : []).map(String).slice(0, 30), conc: !!f.conc, ritual: !!f.ritual, desc: txt(f.desc, 6000), higher: txt(f.higher, 2000), hb: true,
+    };
+    if (f.atk === 'melee' || f.atk === 'ranged') sp.atk = f.atk;
+    if (ABILS.includes(f.save)) sp.dc = { ability: f.save, success: f.saveOn === 'none' ? 'none' : 'half' };
+    const table = (base, up, grows) => {
+      const out = {};
+      if (lvl === 0) {
+        out['1'] = base;
+        if (grows) [[5, 2], [11, 3], [17, 4]].forEach(([l, k]) => (out[String(l)] = scaleExpr(base, k) || base));
+      } else {
+        for (let l = lvl; l <= 9; l++) {
+          const extra = up && l > lvl ? scaleExpr(up, l - lvl) : '';
+          out[String(l)] = extra ? base + '+' + extra : base;
+        }
+      }
+      return out;
+    };
+    const dmg = cleanSpellDice(f.dmg);
+    const dmgUp = parseDice(String(f.dmgUp || '').replace(/\s+/g, '')) ? String(f.dmgUp).replace(/\s+/g, '') : '';
+    if (dmg) {
+      sp.dmg = { type: DAMAGE_TYPES.includes(f.dmgType) ? titleWord(f.dmgType) : 'Force' };
+      sp.dmg[lvl === 0 ? 'char' : 'slot'] = table(dmg, dmgUp, lvl === 0 && f.grow !== false && !/MOD/.test(dmg));
+    }
+    const heal = cleanSpellDice(f.heal);
+    const healUp = parseDice(String(f.healUp || '').replace(/\s+/g, '')) ? String(f.healUp).replace(/\s+/g, '') : '';
+    if (heal) sp.heal = table(heal, healUp, false);
+    if (SHAPES.includes(f.area)) {
+      sp.area = { shape: f.area, size: int(f.areaSize, 5, 400), kind: f.area === 'circle' ? 'radius' : f.area };
+      if (f.area === 'line') sp.area.width = int(f.areaWidth || 5, 5, 60);
+      if (f.areaSelf) sp.area.self = true;
+    }
+    return sp;
+  }
+  function crValue(v) {
+    const n = typeof v === 'string' && v.includes('/') ? Number(v.split('/')[0]) / Number(v.split('/')[1]) : Number(v);
+    return CR_LIST.includes(n) ? n : 1;
+  }
+  function monsterFromHomebrew(f) {
+    const cr = crValue(f.cr);
+    const ab = (Array.isArray(f.abil) ? f.abil : []).slice(0, 6);
+    while (ab.length < 6) ab.push(10);
+    const rows = (list) => (Array.isArray(list) ? list : []).slice(0, 20).filter((a) => a && a.n).map((a) => {
+      const r = { n: txt(a.n, 60), d: txt(a.d, 2000) };
+      if (a.hit !== '' && a.hit != null && Number.isFinite(Number(a.hit))) r.hit = int(a.hit, -5, 30);
+      const dm = String(a.dmg || '').replace(/\s+/g, '');
+      if (dm && parseDice(dm)) r.dmg = [[dm, DAMAGE_TYPES.includes(a.dmgType) ? titleWord(a.dmgType) : '']];
+      if (ABILS.includes(a.save)) r.dc = [a.save, int(a.dc || 10, 1, 40), a.saveOn === 'none' ? 'none' : 'half'];
+      if (SHAPES.includes(a.area)) r.area = Object.assign({ shape: a.area, size: int(a.areaSize, 5, 400) }, a.area === 'line' ? { width: 5 } : {}, a.areaSelf ? { self: true } : {});
+      return r;
+    });
+    const saves = {};
+    ABILS.forEach((k) => {
+      const v = f.saves && f.saves[k];
+      if (v !== '' && v != null && Number.isFinite(Number(v))) saves[k] = int(v, -5, 30);
+    });
+    const hp = int(f.hp, 1, 9999);
+    const hd = String(f.hd || '').replace(/\s+/g, '');
+    const m = {
+      i: 'hb-' + f.id, n: txt(f.name, 60) || 'Homebrew monster', size: SIZES.includes(f.size) ? f.size : 'Medium', type: txt(f.type, 40).toLowerCase() || 'monstrosity',
+      align: txt(f.align, 40) || 'unaligned', ac: int(f.ac, 1, 40), acn: txt(f.acn, 60), hp, hd: hd && parseDice(hd) ? hd : String(hp), speed: txt(f.speed, 80) || '30 ft.',
+      abil: ab.map((v) => int(v, 1, 30)), cr, xp: CR_XP[CR_LIST.indexOf(cr)], pb: cr < 5 ? 2 : cr < 9 ? 3 : cr < 13 ? 4 : cr < 17 ? 5 : cr < 21 ? 6 : cr < 25 ? 7 : cr < 29 ? 8 : 9,
+      senses: txt(f.senses, 120), lang: txt(f.lang, 120), vul: txt(f.vul, 120), res: txt(f.res, 160), imm: txt(f.imm, 160), cimm: txt(f.cimm, 160),
+      traits: rows(f.traits), actions: rows(f.actions), legend: rows(f.legend), react: rows(f.react), hb: true,
+    };
+    if (Object.keys(saves).length) m.saves = saves;
+    return m;
   }
 
   function derive(c, R, feats) {
@@ -395,7 +525,7 @@ const Core = (() => {
     if (cls.cast && L.slots) {
       const ab = cls.cast;
       const slots = L.slots.slice();
-      const isPact = c.cls === 'warlock';
+      const isPact = c.cls === 'warlock' || !!cls.pact;
       let maxLvl = 0;
       slots.forEach((n, i) => {
         if (n > 0) maxLvl = i + 1;
@@ -403,6 +533,7 @@ const Core = (() => {
       let prepared = null;
       if (['cleric', 'druid', 'wizard'].includes(c.cls)) prepared = Math.max(1, mods[ab] + level);
       if (c.cls === 'paladin') prepared = Math.max(1, mods[ab] + Math.floor(level / 2));
+      if (cls.hb) prepared = Math.max(1, mods[ab] + (cls.castType === 'full' || cls.castType === 'pact' ? level : Math.floor(level / 2)));
       cast = {
         ab, dc: 8 + pb + mods[ab], atk: pb + mods[ab] + fx.filter((e) => e.t === 'attack' && e.filter === 'spell' && (e.when !== 'toggle' || toggles[e.key])).reduce((n, e) => n + int(e.hit, -20, 20), 0), mod: mods[ab], slots, pact: isPact, maxLvl,
         cantrips: L.cantrips || 0, known: L.known || null, prepared,
@@ -414,9 +545,7 @@ const Core = (() => {
     const strM = mods.str;
     const dexM = mods.dex;
     const ma = c.cls === 'monk' && cs.martial_arts ? cs.martial_arts.dice_count + 'd' + cs.martial_arts.dice_value : null;
-    for (const w of c.weapons || []) {
-      const W = R.weapons[w];
-      if (!W) continue;
+    const weaponAttack = (w, W, name, src) => {
       const finesse = W.props.includes('finesse');
       const ranged = W.rng === 'Ranged';
       const monkW = !!ma && (w === 'shortsword' || (W.cat === 'Simple' && !ranged && !W.props.includes('heavy') && !W.props.includes('two-handed')));
@@ -428,19 +557,24 @@ const Core = (() => {
         const b = avgExpr(dice);
         if (a > b) dice = ma;
       }
-      const at = { id: w, n: W.n, hit: m + (prof ? pb : 0), dmg: dice + exprMod(m), ty: W.ty, prof, tags: [ranged ? 'ranged' : 'melee', ...W.props.filter((p) => ['heavy', 'finesse', 'light', 'thrown'].includes(p))] };
+      const at = { id: src ? 'item-' + src : w, n: name || W.n, src: src || null, hit: m + (prof ? pb : 0), dmg: dice + exprMod(m), ty: W.ty, prof, tags: [ranged ? 'ranged' : 'melee', ...W.props.filter((p) => ['heavy', 'finesse', 'light', 'thrown'].includes(p))] };
       if (W.vers) at.vers = W.vers + exprMod(m);
       if (W.range) at.range = W.range.filter(Boolean).join('/') + ' ft';
       else if (W.thrown) at.range = 'thrown ' + W.thrown.filter(Boolean).join('/') + ' ft';
       else at.range = W.props.includes('reach') ? 'reach 10 ft' : 'reach 5 ft';
-      attacks.push(at);
-    }
+      return at;
+    };
+    for (const w of c.weapons || []) if (R.weapons[w]) attacks.push(weaponAttack(w, R.weapons[w]));
+    // an equipped magic item can be a weapon of its own
+    (feats || []).forEach((f) => {
+      if (f && f.kind === 'item' && R.weapons[f.weapon]) attacks.push(weaponAttack(f.weapon, R.weapons[f.weapon], String(f.name || R.weapons[f.weapon].n).slice(0, 60), String(f.id)));
+    });
     const unarmedM = ma ? Math.max(strM, dexM) : strM;
     attacks.push({ id: 'unarmed', n: 'Unarmed Strike', hit: unarmedM + pb, dmg: ma ? ma + exprMod(unarmedM) : String(Math.max(1, 1 + unarmedM)), ty: 'Bludgeoning', prof: true, range: 'reach 5 ft', tags: ['melee', 'unarmed'] });
 
     // homebrew attack effects: always-on ones change the numbers, toggles only while switched on
     const atkFx = fx.filter((e) => e.t === 'attack').map((e) => ({
-      key: e.key, feat: e.feat, filter: ATTACK_FILTERS.includes(e.filter) ? e.filter : 'any', toggle: e.when === 'toggle',
+      key: e.key, feat: e.feat, src: e.src, filter: ATTACK_FILTERS.includes(e.filter) ? e.filter : 'any', toggle: e.when === 'toggle',
       hit: int(e.hit, -20, 20), dmg: cleanDmg(e.dmg), dmgType: DAMAGE_TYPES.includes(e.dmgType) ? e.dmgType : '', text: describeEffect(e),
     }));
     atkFx.forEach((m) => (m.on = !m.toggle || !!toggles[m.key]));
@@ -449,7 +583,8 @@ const Core = (() => {
       at.extra = [];
       at.using = [];
       atkFx.forEach((m) => {
-        if (!m.on || m.filter === 'spell' || (m.filter !== 'any' && !at.tags.includes(m.filter))) return;
+        if (!m.on || m.filter === 'spell') return;
+        if (m.filter === 'item' ? at.src !== m.src : m.filter !== 'any' && !at.tags.includes(m.filter)) return;
         at.hit += m.hit;
         if (m.dmg && m.dmgType) at.extra.push([m.dmg.replace(/^\+/, ''), m.dmgType]);
         else if (m.dmg) at.dmg += m.dmg;
@@ -696,6 +831,7 @@ const Core = (() => {
     expertiseSlots, derive, encounter, encounterMultiplier, crLabel, inTemplate, templateCorners, templateBBox,
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
     EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
+    SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
     _setRng: (f) => { rng = f; },
   };
 })();

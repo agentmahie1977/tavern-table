@@ -175,4 +175,29 @@ eq(d.scores.dex, 20, 'ability boost stops at 20');
 d = Core.derive(archer, R, [{ id: 'x', name: 'Junk', effects: [{ t: 'attack', hit: 'abc', dmg: '<b>1d4</b>' }, { t: 'ac', n: 1e9 }] }]);
 eq(hbBow(d).hit, hbBow(base0).hit, 'bad numbers ignored'); eq(hbBow(d).dmg, hbBow(base0).dmg, 'bad dice ignored'); eq(d.ac, base0.ac + 10, 'clamped');
 eq(Core.describeEffect(trade.effects[0]), '−3 to hit, +6 damage on ranged attacks, when switched on');
+
+// ---- homebrew items, classes, spells, monsters (made-up test content)
+const blade = { id: 'i1', kind: 'item', name: 'Test Blade', weapon: 'longsword', effects: [{ t: 'attack', filter: 'item', hit: 1, dmg: '1' }, { t: 'ac', n: 1 }] };
+d = Core.derive(archer, R, [blade]);
+const ib = d.attacks.find((a) => a.id === 'item-i1');
+ok(!!ib, 'item brings its own weapon'); eq(ib.n, 'Test Blade'); eq(ib.hit, hbSword(Core.derive(archer, R)).hit + 1, 'item effect on its own weapon');
+eq(hbSword(d).hit, hbSword(Core.derive(archer, R)).hit, 'item effect leaves other weapons alone'); eq(d.ac, base0.ac + 1);
+eq(Core.scaleExpr('2d6+1', 3), '6d6+3');
+const hc = Core.homebrewClass({ id: 'k1', name: 'Test Warden', hd: 10, saves: ['str', 'wis'], armor: ['Light', 'Shield', 'Bogus'], weapons: 'simple', skillsChoose: 2, skills: ['athletics', 'nope'], cast: 'half', castAb: 'wis', spellList: 'ranger', subLevel: 3, features: [{ lvl: 1, name: 'A' }, { lvl: 1, name: 'B' }, { lvl: 6, name: 'C' }] }, R);
+eq(hc.hd, 10); eq(hc.armor, ['Light', 'Shield']); eq(hc.skills.from, ['athletics']); eq(hc.levels[0].feats, ['hb-k1-0', 'hb-k1-1']); eq(hc.levels[5].feats, ['hb-k1-2']);
+eq(hc.levels[4].slots, R.classes.paladin.levels[4].slots, 'half caster slots'); eq(hc.levels[3].asi, 1); eq(hc.weapons.every((w) => R.weapons[w].cat === 'Simple'), true);
+const R2 = Object.assign({}, R, { classes: Object.assign({}, R.classes, { 'hb-k1': hc }) });
+d = Core.derive({ cls: 'hb-k1', level: 5, race: 'human', base: { str: 14, dex: 12, con: 14, int: 8, wis: 15, cha: 10 } }, R2);
+eq(d.hpMax, 10 + 2 + 4 * (6 + 2), 'con 14 +1 human = +2'); eq(d.saves.wis.prof, true); eq(d.cast.ab, 'wis'); eq(d.cast.maxLvl, 2); eq(d.cast.prepared, 3 + 2);
+eq(Core.homebrewClass({ id: 'k2', cast: 'third' }, R).levels[2].slots[0], 2, 'third caster gets slots at 3');
+const hs = Core.spellFromHomebrew({ id: 's1', name: 'Test Bolt', lvl: 2, cls: ['wizard', 'hb-k1'], dmg: '3d8', dmgUp: '1d8', dmgType: 'lightning', save: 'dex', saveOn: 'half', area: 'line', areaSize: 60 });
+eq(hs.i, 'hb-s1'); eq(hs.dmg.type, 'Lightning'); eq(hs.dmg.slot['2'], '3d8'); eq(hs.dmg.slot['4'], '3d8+2d8'); eq(hs.dc, { ability: 'dex', success: 'half' }); eq(hs.area, { shape: 'line', size: 60, kind: 'line', width: 5 });
+const hcan = Core.spellFromHomebrew({ id: 's2', name: 'Test Spark', lvl: 0, dmg: '1d10', dmgType: 'fire', atk: 'ranged' });
+eq(hcan.dmg.char, { 1: '1d10', 5: '2d10', 11: '3d10', 17: '4d10' }); eq(hcan.atk, 'ranged');
+eq(Core.spellFromHomebrew({ id: 's3', lvl: 1, heal: '1d8+MOD', healUp: '1d8' }).heal['3'], '1d8+MOD+2d8');
+eq(Core.spellFromHomebrew({ id: 's4', lvl: 1, dmg: '<img>', area: 'blob' }).dmg, undefined);
+const hm = Core.monsterFromHomebrew({ id: 'm1', name: 'Test Lurker', size: 'Large', cr: '1/2', hp: 30, hd: '4d10+8', abil: [16, 12, 14, 3, 10, 5], saves: { con: 4, wis: '' },
+  actions: [{ n: 'Claw', d: 'Rake.', hit: 5, dmg: '2d6+3', dmgType: 'slashing' }, { n: 'Spit', save: 'dex', dc: 12, saveOn: 'half', dmg: '3d6', dmgType: 'acid', area: 'line', areaSize: 30 }, { d: 'no name' }] });
+eq(hm.cr, 0.5); eq(hm.xp, 100); eq(hm.pb, 2); eq(hm.saves, { con: 4 }); eq(hm.actions.length, 2); eq(hm.actions[0].dmg, [['2d6+3', 'Slashing']]); eq(hm.actions[1].dc, ['dex', 12, 'half']); eq(hm.actions[1].area.shape, 'line');
+eq(Core.encounter([3, 3, 3, 3], [{ xp: hm.xp, count: 4 }]).label, 'Medium');
 console.log('core tests passed:', n);

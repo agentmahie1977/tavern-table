@@ -36,6 +36,10 @@ with the db, room and user capabilities. Friends with a Claude account join as E
 - Spell areas (circle, cone, square, line) that find who's inside and apply damage and saves
 - Hero builder and sheet: SRD races, classes, backgrounds, spells, attacks, resources,
   death saves, rests
+- **Campaigns:** run several in parallel, each with its own maps, heroes, log and homebrew
+- **Inventories:** per hero and a shared party inventory, with coins
+- **Homebrew everything:** feats, magic items (work when equipped/attuned, can be weapons),
+  spells, monsters, subclasses and classes, all usable in the builder, sheets and encounters
 - **Homebrew feats:** write your table's own feats and pick their effects from menus
   (attack trade-offs with an on/off switch, ability and AC bonuses, proficiencies,
   limited-use trackers, wider crit range). Hero sheets apply them automatically.
