@@ -251,7 +251,7 @@ const Core = (() => {
 
   /* ------------------------------------------- homebrew feat effects */
   // A homebrew feat is {id, name, desc, effects:[...]}; shared data, so every field is checked here.
-  const EFFECT_TYPES = ['attack', 'ability', 'ac', 'speed', 'init', 'hpPerLevel', 'passive', 'save', 'saveProf', 'skillProf', 'resource', 'crit', 'spells', 'skillChoice', 'expertise', 'extraAttack', 'unarmored', 'armorProf', 'checkHalf'];
+  const EFFECT_TYPES = ['attack', 'ability', 'ac', 'speed', 'init', 'hpPerLevel', 'passive', 'save', 'saveProf', 'skillProf', 'resource', 'crit', 'spells', 'skillChoice', 'expertise', 'extraAttack', 'unarmored', 'armorProf', 'checkHalf', 'options'];
   const ATTACK_FILTERS = ['any', 'melee', 'ranged', 'heavy', 'finesse', 'light', 'thrown', 'unarmed', 'spell', 'item'];
   const DAMAGE_TYPES = ['acid', 'bludgeoning', 'cold', 'fire', 'force', 'lightning', 'necrotic', 'piercing', 'poison', 'psychic', 'radiant', 'slashing', 'thunder'];
   const int = (v, lo, hi) => clamp(Math.round(Number(v) || 0), lo, hi);
@@ -316,6 +316,7 @@ const Core = (() => {
       case 'extraAttack': return 'Attack ' + (1 + int(e.n, 1, 3)) + ' times when you take the Attack action';
       case 'unarmored': return 'Without armor, AC is 10 + Dex' + (ABILS.includes(e.ab) && e.ab !== 'dex' ? ' + ' + ABIL_SHORT[e.ab] : '');
       case 'armorProf': return 'Training with ' + (e.cat === 'Shield' ? 'shields' : String(e.cat || 'Light').toLowerCase() + ' armor');
+      case 'options': return 'Choose ' + int(e.n, 1, 20) + (String(e.more || '').trim() ? ' (more at higher levels)' : '') + ' from ' + plural((Array.isArray(e.options) ? e.options : []).length, 'option') + (e.label ? ': ' + txt(e.label, 60) : '');
       case 'checkHalf': return 'Half proficiency (rounded up) on ' + (Array.isArray(e.abs) ? e.abs : []).filter((a) => ABILS.includes(a)).map((a) => ABIL_SHORT[a]).join('/') + ' checks without proficiency';
     }
     return '';
@@ -464,6 +465,71 @@ const Core = (() => {
     if ((c.cls === 'paladin' || c.cls === 'ranger') && level >= 2) return 1;
     return 0;
   }
+  // How SRD features are used: [feature id prefix, action type, tracker key, cost, short note]. Types:
+  // action, bonus (bonus action), reaction, other (free, on a hit, when casting…). Unlisted = always on.
+  const SRD_USE = [
+    ['rage', 'bonus', 'rage', 1, 'Lasts 1 minute'], ['reckless-attack', 'other', '', 0, 'On your first attack of the turn'], ['frenzy', 'bonus', '', 0, 'While raging: one melee attack'],
+    ['intimidating-presence', 'action', '', 0, 'Frighten one creature in 30 ft'], ['retaliation', 'reaction', '', 0, 'When a creature within 5 ft damages you'], ['relentless-rage', 'other', '', 0, 'When rage drops you to 0 HP'],
+    ['bardic-inspiration', 'bonus', 'inspiration', 1, 'One creature within 60 ft'], ['cutting-words', 'reaction', 'inspiration', 1, 'Subtract the die from a roll'],
+    ['channel-divinity-sacred-weapon', 'action', 'channel', 1, ''], ['channel-divinity-turn-the-unholy', 'action', 'channel', 1, ''],
+    ['wild-shape', 'action', 'wild-shape', 1, ''], ['action-surge', 'other', 'surge', 1, 'One extra action this turn'], ['indomitable', 'other', 'indomitable', 1, 'Reroll a failed save'],
+    ['flurry-of-blows', 'bonus', 'ki', 1, 'Two unarmed strikes after the Attack action'], ['patient-defense', 'bonus', 'ki', 1, 'Dodge'], ['step-of-the-wind', 'bonus', 'ki', 1, 'Disengage or Dash, jump doubled'],
+    ['stunning-strike', 'other', 'ki', 1, 'After a melee hit: Con save or stunned'], ['deflect-missiles', 'reaction', '', 0, 'Reduce ranged weapon damage'], ['slow-fall', 'reaction', '', 0, 'Reduce falling damage'],
+    ['wholeness-of-body', 'action', '', 0, 'Heal 3 × monk level, once per long rest'], ['quivering-palm', 'other', 'ki', 3, 'On an unarmed hit'], ['empty-body', 'action', 'ki', 4, 'Invisible and resistant for 1 minute'],
+    ['lay-on-hands', 'action', 'lay-on-hands', 0, 'Spend HP from the pool'], ['divine-sense', 'action', 'divine-sense', 1, ''], ['divine-smite', 'other', '', 0, 'After a melee hit: spend a spell slot for 2d8 radiant (+1d8 per slot level)'],
+    ['primeval-awareness', 'action', '', 0, 'Spend a spell slot'], ['hide-in-plain-sight', 'action', '', 0, '1 minute to camouflage'], ['vanish', 'bonus', '', 0, 'Hide'],
+    ['cunning-action', 'bonus', '', 0, 'Dash, Disengage or Hide'], ['uncanny-dodge', 'reaction', '', 0, 'Halve an attack’s damage'], ['fast-hands', 'bonus', '', 0, 'Cunning Action: item or tools'],
+    ['stroke-of-luck', 'other', '', 0, 'Turn a miss into a hit or a failed check into 20'], ['flexible-casting', 'bonus', 'sorcery', 0, 'Turn sorcery points into spell slots'],
+    ['arcane-recovery', 'other', 'arcane-recovery', 1, 'During a short rest'], ['second-wind', 'bonus', 'second-wind', 1, ''],
+  ];
+  // SRD choices players make: [feature id, action type, tracker, cost, note] for each option
+  const META = { careful: 1, distant: 1, empowered: 1, extended: 1, heightened: 3, quickened: 2, subtle: 1, twinned: 0 };
+  const INVOCATIONS = ['agonizing-blast', 'armor-of-shadows', 'beast-speech', 'beguiling-influence', 'book-of-ancient-secrets', 'devils-sight', 'eldritch-sight', 'eldritch-spear', 'eyes-of-the-rune-keeper', 'fiendish-vigor', 'gaze-of-two-minds', 'mask-of-many-faces', 'misty-visions', 'repelling-blast', 'thief-of-five-fates', 'voice-of-the-chain-master', 'mire-the-mind', 'one-with-shadows', 'sign-of-ill-omen', 'thirsting-blade', 'bewitching-whispers', 'dreadful-word', 'sculptor-of-flesh', 'ascendant-step', 'minions-of-chaos', 'otherworldly-leap', 'whispers-of-the-grave', 'lifedrinker', 'chains-of-carceri', 'master-of-myriad-forms', 'visions-of-distant-realms', 'witch-sight'];
+  const DRAGONS = ['black---acid', 'blue---lightning', 'brass---fire', 'bronze---lightning', 'copper---acid', 'gold---fire', 'green---poison', 'red---fire', 'silver---cold', 'white---cold'];
+  function srdOptionSources(c, level, cs, sub) {
+    const out = [];
+    const group = (id, label, n, more, opts) => out.push({ id, name: label, builtin: true, effects: [{ t: 'options', label, n, more, options: opts.map((o) => Object.assign({ srd: true }, o)) }] });
+    if (c.cls === 'sorcerer' && level >= 3) group('b-metamagic', 'Metamagic', 2, '10:1, 17:1', Object.keys(META).map((k) => ({ id: 'metamagic-' + k + '-spell', act: 'other', costRes: 'sorcery', costN: META[k], note: META[k] ? 'When you cast a spell' : 'Costs sorcery points equal to the spell’s level' })));
+    if (sub && sub.i === 'draconic') group('b-dragon', 'Dragon ancestor', 1, '', DRAGONS.map((k) => ({ id: 'dragon-ancestor-' + k + '-damage' })));
+    if (c.cls === 'warlock' && cs.invocations_known) group('b-invocations', 'Eldritch Invocations', cs.invocations_known, '', INVOCATIONS.map((k) => ({ id: 'eldritch-invocation-' + k })));
+    if (c.cls === 'warlock' && level >= 3) group('b-pact', 'Pact Boon', 1, '', ['chain', 'blade', 'tome'].map((k) => ({ id: 'pact-of-the-' + k })));
+    if (sub && sub.i === 'hunter') {
+      group('b-prey', 'Hunter’s Prey', 1, '', ['colossus-slayer', 'giant-killer', 'horde-breaker'].map((k) => ({ id: 'hunters-prey-' + k, act: k === 'giant-killer' ? 'reaction' : '' })));
+      if (level >= 7) group('b-tactics', 'Defensive Tactics', 1, '', ['escape-the-horde', 'multiattack-defense', 'steel-will'].map((k) => ({ id: 'defensive-tactics-' + k })));
+      if (level >= 11) group('b-multi', 'Multiattack', 1, '', ['volley', 'whirlwind-attack'].map((k) => ({ id: 'multiattack-' + k, act: 'action' })));
+      if (level >= 15) group('b-shd', 'Superior Hunter’s Defense', 1, '', ['evasion', 'stand-against-the-tide', 'uncanny-dodge'].map((k) => ({ id: 'superior-hunters-defense-' + k, act: k === 'evasion' ? '' : 'reaction' })));
+    }
+    if (sub && sub.i === 'land') group('b-land', 'Circle land', 1, '', ['arctic', 'coast', 'desert', 'forest', 'grassland', 'mountain', 'swamp'].map((k) => ({ id: 'circle-of-the-land-' + k })));
+    return out;
+  }
+  // how many picks an options effect gives at this level: n, plus "7:2, 10:1" style extras
+  function optionCount(e, level) {
+    let n = int(e.n, 0, 40);
+    String(e.more || '').split(',').forEach((part) => {
+      const m = /^\s*(\d+)\s*:\s*\+?(\d+)\s*$/.exec(part);
+      if (m && level >= Number(m[1])) n += Number(m[2]);
+    });
+    return clamp(n, 0, 40);
+  }
+  // turn "choose from options" effects into choices, and the chosen options into sources
+  function expandOptions(effects, picks, level) {
+    const choices = [];
+    const sources = [];
+    effects.filter((e) => e.t === 'options').forEach((e) => {
+      const opts = (Array.isArray(e.options) ? e.options : []).slice(0, 80).filter((o) => o && o.id != null);
+      const n = optionCount(e, level);
+      if (!n || !opts.length) return;
+      choices.push({ key: e.key, kind: 'options', n, label: txt(e.label, 60) || e.feat, options: opts.map((o) => ({ id: String(o.id), name: txt(o.name, 60), desc: txt(o.desc, 3000), srd: !!o.srd })) });
+      const chosen = (Array.isArray(picks[e.key]) ? picks[e.key] : []).filter((id) => opts.some((o) => String(o.id) === id)).slice(0, n);
+      chosen.forEach((id) => {
+        const o = opts.find((x) => String(x.id) === id);
+        // SRD options take their name from the feature text
+        sources.push({ id: e.key + '-' + id, kind: 'option', name: txt(o.name, 60) || (o.srd ? '' : id), desc: txt(o.desc, 3000), act: o.act, costRes: o.costRes, costN: o.costN, roll: o.roll, note: o.note, srdFeature: o.srd ? String(o.id) : null, effects: (Array.isArray(o.effects) ? o.effects : []).filter((x) => x && x.t !== 'options') });
+      });
+    });
+    return { choices, sources };
+  }
+
   // mechanics of SRD class and subclass features, written as effect sources
   function builtinSources(c, level, cs, sub) {
     const out = [];
@@ -488,6 +554,7 @@ const Core = (() => {
       src('b-life', 'Life Domain', [{ t: 'spells', mode: 'fixed', list }, { t: 'armorProf', cat: 'Heavy' }]);
       if (level >= 8) src('b-divine-strike', 'Divine Strike', [{ t: 'attack', when: 'toggle', filter: 'any', dmg: level >= 14 ? '2d8' : '1d8', dmgType: 'radiant' }]);
     }
+    out.push(...srdOptionSources(c, level, cs, sub));
     // fighting styles the player picked
     const styles = (Array.isArray(c.styles) ? c.styles : []).filter((x) => (STYLES[c.cls] || []).includes(x)).slice(0, styleSlots(c, level, sub));
     if (styles.includes('archery')) src('b-archery', 'Archery style', [{ t: 'attack', filter: 'ranged', hit: 2 }]);
@@ -498,16 +565,22 @@ const Core = (() => {
     const out = [];
     const dc = cast ? cast.dc : 8 + pb + mods.wis;
     if (c.cls === 'cleric' && level >= 2) {
-      out.push({ key: 'turn-undead', n: 'Turn Undead', uses: 'channel', text: `Channel Divinity · each undead within 30 ft makes a DC ${dc} Wisdom save or is turned for 1 minute` + (cs.destroy_undead_cr ? ` (destroyed if CR ${crLabel(cs.destroy_undead_cr)} or lower)` : '') });
-      if (level >= 10) out.push({ key: 'divine-intervention', n: 'Divine Intervention', roll: '1d100', text: level >= 20 ? 'Your deity always answers' : `Succeeds on a d100 roll of ${level} or lower` });
+      out.push({ key: 'turn-undead', act: 'action', n: 'Turn Undead', uses: 'channel', text: `Channel Divinity · each undead within 30 ft makes a DC ${dc} Wisdom save or is turned for 1 minute` + (cs.destroy_undead_cr ? ` (destroyed if CR ${crLabel(cs.destroy_undead_cr)} or lower)` : '') });
+      if (level >= 10) out.push({ key: 'divine-intervention', act: 'action', n: 'Divine Intervention', roll: '1d100', text: level >= 20 ? 'Your deity always answers' : `Succeeds on a d100 roll of ${level} or lower` });
     }
-    if (sub && sub.i === 'life' && level >= 2) out.push({ key: 'preserve-life', n: 'Preserve Life', uses: 'channel', text: `Channel Divinity · restore up to ${5 * level} HP, split among creatures within 30 ft (each up to half its max)` });
-    if (c.cls === 'fighter') out.push({ key: 'second-wind', n: 'Second Wind', uses: 'second-wind', roll: '1d10+' + level, heal: true, text: `Bonus action · regain 1d10+${level} hit points` });
+    if (sub && sub.i === 'life' && level >= 2) out.push({ key: 'preserve-life', act: 'action', n: 'Preserve Life', uses: 'channel', text: `Channel Divinity · restore up to ${5 * level} HP, split among creatures within 30 ft (each up to half its max)` });
+    if (c.cls === 'fighter') out.push({ key: 'second-wind', act: 'bonus', n: 'Second Wind', uses: 'second-wind', roll: '1d10+' + level, heal: true, text: `Bonus action · regain 1d10+${level} hit points` });
     return out;
   }
 
   function derive(c, R, feats) {
     const fx = featEffects(feats);
+    // choices players make for features and feats (spells, skills, options), stored in c.picks[effect key]
+    const picks = c.picks && typeof c.picks === 'object' ? c.picks : {};
+    const picked = (key, n, ok) => (Array.isArray(picks[key]) ? picks[key] : []).filter((v) => typeof v === 'string' && (!ok || ok(v))).slice(0, n);
+    const lvl0 = clamp(parseInt(c.level, 10) || 1, 1, 20);
+    const ex1 = expandOptions(fx, picks, lvl0);
+    fx.push(...featEffects(ex1.sources));
     const toggles = c.fx && typeof c.fx === 'object' ? c.fx : {};
     const fb = { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 };
     fx.forEach((e) => {
@@ -532,10 +605,11 @@ const Core = (() => {
     const sub = (cls.subs || []).find((s) => s.i === c.subclass && level >= s.start) || null;
     const csNow = L.cs || {};
     const bi = builtinSources(c, level, csNow, sub);
-    fx.push(...featEffects(bi.sources));
-    // choices players make for features and feats (spells, skills), stored in c.picks[effect key]
-    const picks = c.picks && typeof c.picks === 'object' ? c.picks : {};
-    const picked = (key, n, ok) => (Array.isArray(picks[key]) ? picks[key] : []).filter((v) => typeof v === 'string' && (!ok || ok(v))).slice(0, n);
+    const biFx = featEffects(bi.sources);
+    fx.push(...biFx);
+    const ex2 = expandOptions(biFx, picks, level);
+    fx.push(...featEffects(ex2.sources));
+    const optionSources = ex1.sources.concat(ex2.sources);
 
     // saves
     const saves = {};
@@ -545,7 +619,7 @@ const Core = (() => {
     }
 
     // skills
-    const choices = [];
+    const choices = ex1.choices.concat(ex2.choices);
     const chosenSkills = [];
     fx.filter((e) => e.t === 'skillChoice').forEach((e) => {
       const n = int(e.n, 1, 18);
@@ -722,12 +796,12 @@ const Core = (() => {
     fx.filter((e) => e.t === 'spells').forEach((e) => {
       const ab = ABILS.includes(e.ab) ? e.ab : null;
       if (e.mode === 'fixed') {
-        (Array.isArray(e.list) ? e.list : []).slice(0, 40).forEach((id) => typeof id === 'string' && granted.push({ id, key: e.key, src: e.feat, always: true, ab, free: !!e.free }));
+        (Array.isArray(e.list) ? e.list : []).slice(0, 40).forEach((id) => typeof id === 'string' && granted.push({ id, key: e.key, src: e.feat, always: true, ab, free: !!e.free, costRes: e.costRes || '', costN: int(e.costN, 0, 99), note: txt(e.note, 120) }));
       } else {
         const n = int(e.count, 1, 20);
         const maxLvl = e.maxLvl === 'slot' || e.maxLvl == null || e.maxLvl === '' ? 'slot' : int(e.maxLvl, 0, 9);
         choices.push({ key: e.key, kind: 'spells', n, from: e.from && e.from !== 'any' ? String(e.from) : 'any', maxLvl, label: e.feat });
-        picked(e.key, n).forEach((id) => granted.push({ id, key: e.key, src: e.feat, always: false, ab, free: !!e.free }));
+        picked(e.key, n).forEach((id) => granted.push({ id, key: e.key, src: e.feat, always: false, ab, free: !!e.free, costRes: e.costRes || '', costN: int(e.costN, 0, 99), note: txt(e.note, 120) }));
       }
     });
 
@@ -778,6 +852,35 @@ const Core = (() => {
       resources.push({ key: 'h:' + e.key, n: String(e.name || e.feat).slice(0, 40), max, reset: e.reset === 'short' ? 'short' : 'long', feat: e.feat });
     });
 
+    // every usable ability: SRD features, chosen options, homebrew feats/features/items, class actions
+    const resolveRes = (r) => {
+      if (!r) return null;
+      const want = String(r).toLowerCase().trim();
+      const hit = resources.find((x) => x.key === r) || resources.find((x) => x.n.toLowerCase() === want) ||
+        resources.find((x) => { const n = x.n.toLowerCase().replace(/\s*\(.*\)$/, ''); return n.includes(want) || want.includes(n.replace(/ points?$/, '')); });
+      return hit ? hit.key : null;
+    };
+    const ACTS = ['action', 'bonus', 'reaction', 'other'];
+    const abilities = [];
+    const seenUse = new Set();
+    const addAbility = (a) => {
+      if (!ACTS.includes(a.act) || seenUse.has(a.key)) return;
+      seenUse.add(a.key);
+      const n = int(a.n, 0, 99);
+      abilities.push({ key: a.key, name: txt(a.name, 60), act: a.act, res: resolveRes(a.res), resName: txt(a.res, 40), n, roll: txt(a.roll, 40), heal: !!a.heal, note: txt(a.note, 160), featId: a.featId || null, desc: txt(a.desc, 3000), src: a.src || '' });
+    };
+    const useOf = (id) => SRD_USE.find(([pre]) => id === pre || id.startsWith(pre + '-'));
+    [...features].reverse().forEach((f) => {
+      const u = useOf(f.id);
+      if (u && u[0] !== 'second-wind') addAbility({ key: 'srd-' + u[0], featId: f.id, act: u[1], res: u[2], n: u[3], note: u[4], src: f.src });
+    });
+    const hbSources = (feats || []).filter(Boolean).concat(optionSources);
+    hbSources.forEach((f) => {
+      const u = f.srdFeature ? useOf(f.srdFeature) : null;
+      const act = f.act || (u ? u[1] : '');
+      addAbility({ key: 'hb-' + f.id, name: f.name, desc: f.desc, featId: f.srdFeature, act, res: f.costRes || (u ? u[2] : ''), n: f.costN != null && f.costN !== '' ? f.costN : u ? u[3] : 0, roll: f.roll, note: f.note || (u ? u[4] : ''), src: f.kind === 'option' ? 'option' : f.kind || 'feat' });
+    });
+
     const classSpecific = [];
     if (cs.sneak_attack) classSpecific.push(['Sneak Attack', cs.sneak_attack.dice_count + 'd' + cs.sneak_attack.dice_value]);
     if (ma) classSpecific.push(['Martial Arts', ma]);
@@ -799,7 +902,9 @@ const Core = (() => {
       expertiseSlots: expertiseSlots(c), asiPoints: asiPoints(c, R), racial: rb,
       critMin, toggles: atkFx.filter((m) => m.toggle), feats: (feats || []).filter(Boolean),
       choices, granted, armorTraining, styles: bi.styles, styleSlots: styleSlots(c, level, sub), styleOptions: STYLES[c.cls] || [], extraAttacks,
-      actions: classActions(c, level, cs, sub, mods, pb, cast), disciple: !!(sub && sub.i === 'life'), supremeHealing: !!(sub && sub.i === 'life' && level >= 17),
+      actions: classActions(c, level, cs, sub, mods, pb, cast),
+      abilities: abilities.concat(classActions(c, level, cs, sub, mods, pb, cast).map((x) => ({ key: 'ca-' + x.key, name: x.n, act: x.act, res: x.uses ? resolveRes(x.uses) : null, resName: x.uses || '', n: x.uses ? 1 : 0, roll: x.roll || '', heal: !!x.heal, note: x.text, featId: null, desc: x.text, src: 'class' }))),
+      grantedCost: granted.map((g) => Object.assign({}, g, { res: resolveRes(g.costRes) })), disciple: !!(sub && sub.i === 'life'), supremeHealing: !!(sub && sub.i === 'life' && level >= 17),
       songOfRest: c.cls === 'bard' && cs.song_of_rest_die ? 'd' + cs.song_of_rest_die : null,
     };
   }
@@ -974,7 +1079,7 @@ const Core = (() => {
     expertiseSlots, derive, encounter, encounterMultiplier, crLabel, inTemplate, templateCorners, templateBBox,
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
     EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
-    STYLES, LIFE_SPELLS, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
+    STYLES, LIFE_SPELLS, SRD_USE, optionCount, expandOptions, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
     _setRng: (f) => { rng = f; },
   };
 })();

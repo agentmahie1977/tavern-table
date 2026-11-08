@@ -646,17 +646,9 @@ const UI = (() => {
       ${edit ? html`<div class="btn-row"><span class="small muted">Next roll:</span><div class="seg">${['normal', 'adv', 'dis'].map((m) => html`<button type="button" data-act="mode" data-m="${m}" aria-pressed="${mode === m}">${m === 'normal' ? 'Normal' : m === 'adv' ? 'Advantage' : 'Disadvantage'}</button>`)}</div></div>` : ''}
       <div class="card"><div class="card-title"><h3>Abilities</h3><span class="small muted">Tap to roll a check or save</span></div><div class="abil-grid">${abil}</div></div>
       <div class="card"><div class="card-title"><h3>Skills</h3></div><div class="skill-list">${skills}</div></div>
-      <div class="card"><div class="card-title"><h3>Attacks</h3><span class="small muted">${d.acNote}${d.critMin < 20 ? ` · crits on ${d.critMin}–20` : ''}</span></div>
-        ${d.toggles.length ? html`<div class="chips">${d.toggles.map((t) => html`<button type="button" class="chip fx-toggle" data-act="fx" data-k="${t.key}" aria-pressed="${t.on}" ${edit ? '' : 'disabled'}><b>${t.feat}</b> ${t.on ? 'on' : 'off'} · ${t.text.replace(/, when switched on$/, '')}</button>`)}</div>` : ''}
-        <div class="list">${attacks}</div></div>
+      ${actionsCardHtml(ch, d, attacks, edit)}
       ${d.feats.some((f) => (f.kind || 'feat') === 'feat') ? html`<div class="card"><div class="card-title"><h3>Feats</h3></div><div class="list">${d.feats.filter((f) => (f.kind || 'feat') === 'feat').map((f) => html`<button type="button" class="row tap" data-act="hbfeat" data-id="${f.id}"><span class="main"><span class="title" style="display:block">${f.name}</span><span class="sub" style="display:block">${(f.effects || []).map(Core.describeEffect).filter(Boolean).join(' · ') || 'Description only'}</span></span></button>`)}</div></div>` : ''}
       ${spells}
-      ${d.actions.length ? html`<div class="card"><div class="card-title"><h3>Class actions</h3></div><div class="list">${d.actions.map((x, i) => {
-        const r = x.uses && d.resources.find((rr) => rr.key === x.uses);
-        const left = r ? r.max - Math.min(r.max, (ch.res || {})[r.key] || 0) : null;
-        return html`<div class="row"><span class="main"><span class="title" style="display:block">${x.n}</span><span class="sub" style="display:block;white-space:normal">${x.text}${r ? ` · ${left} of ${r.max} ${r.n.toLowerCase()} left` : ''}</span></span>
-          <button type="button" class="btn btn-sm" data-act="class-act" data-i="${i}" ${edit && (left == null || left > 0) ? '' : 'disabled'}>${x.roll ? 'Roll' : 'Use'}</button></div>`;
-      })}</div></div>` : ''}
       ${res.length ? html`<div class="card"><div class="card-title"><h3>Resources</h3></div><div class="list">${res}</div></div>` : ''}
       ${invCardHtml(ch, edit)}${itemSuggestions()}
       ${d.classSpecific.length ? html`<div class="card"><div class="card-title"><h3>${cls.n} table</h3></div><dl class="kv">${d.classSpecific.map(([k, v]) => html`<dt>${k}</dt><dd class="num">${v}</dd>`)}</dl></div>` : ''}
@@ -667,6 +659,64 @@ const UI = (() => {
         ${bgFeat && bgFeat.n ? html`<div class="label">Background</div><div class="chips"><button type="button" class="chip" data-act="bgfeat">${bgFeat.n}</button></div>` : ''}</div></details>
       <div class="card"><div class="card-title"><h3>Notes</h3></div><textarea id="heroNotes" placeholder="Gear, gold, allies, secrets…" ${edit ? '' : 'readonly'}>${ch.notes || ''}</textarea></div>
       ${edit ? html`<div class="btn-row end"><button type="button" class="btn btn-danger btn-sm" data-act="delete-hero">${icon('trash')} Delete hero</button></div>` : ''}`;
+  }
+
+  /* ------------------------------------------------ actions card */
+  // Everything a hero can do, split by how it's used: action, bonus action, reaction, other.
+  const ACT_TABS = [['action', 'Action'], ['bonus', 'Bonus action'], ['reaction', 'Reaction'], ['other', 'Other']];
+  function spellAct(sp) {
+    const t = String(sp.time || '').toLowerCase();
+    if (/bonus/.test(t)) return 'bonus';
+    if (/reaction/.test(t)) return 'reaction';
+    if (/^1 action/.test(t)) return 'action';
+    return null;
+  }
+  function abilityName(a) {
+    return a.name || (a.featId && D.features && D.features[a.featId] ? D.features[a.featId].n : titleCase(String(a.featId || a.key).replace(/^srd-/, '').replace(/-/g, ' ')));
+  }
+  // "2 Ki points · 3 of 5 left", or "2 superiority dice" when the hero has no tracker by that name
+  function costText(ch, d, res, n, resName) {
+    if (!n && !res) return '';
+    const r = res && d.resources.find((x) => x.key === res);
+    // "1 Ki point", "2 Ki points", "1 superiority die"
+    const unit = (name, k) => (k === 1 ? String(name).replace(/ points$/i, ' point').replace(/ dice$/i, ' die') : name);
+    if (r) {
+      const left = r.max - Math.min(r.max, (ch.res || {})[r.key] || 0);
+      return `${n ? 'Costs ' + n + ' ' + unit(r.n.replace(/\s*\(.*\)$/, ''), n) : 'Uses ' + r.n.replace(/\s*\(.*\)$/, '')} · ${left} of ${r.max} left`;
+    }
+    return resName ? `Costs ${n || 1} ${unit(resName, n || 1)}` : '';
+  }
+  function actionsCardHtml(ch, d, attacks, edit) {
+    const tab = ACT_TABS.some(([k]) => k === H.actTab) ? H.actTab : 'action';
+    const known = [...new Set([...(ch.spells || []), ...d.granted.map((g) => g.id)])].map((i) => D.spellsById && D.spellsById.get(i)).filter(Boolean);
+    const costOf = new Map(d.grantedCost.filter((g) => g.costN || g.costRes).map((g) => [g.id, g]));
+    const rows = {};
+    ACT_TABS.forEach(([k]) => (rows[k] = []));
+    d.abilities.forEach((a, i) => {
+      const cost = costText(ch, d, a.res, a.n, a.resName);
+      const r = a.res && d.resources.find((x) => x.key === a.res);
+      const left = r ? r.max - Math.min(r.max, (ch.res || {})[r.key] || 0) : null;
+      rows[a.act].push(html`<div class="row act-row"><span class="main"><button type="button" class="linkish" data-act="ab-read" data-i="${i}">${abilityName(a)}</button>
+        <span class="sub" style="display:block;white-space:normal">${[cost, a.note, a.roll ? 'Roll ' + a.roll : ''].filter(Boolean).join(' · ')}</span></span>
+        <button type="button" class="btn btn-sm" data-act="ab-use" data-i="${i}" ${edit && (left == null || left >= Math.max(1, a.n || 0)) ? '' : 'disabled'}>${a.roll ? 'Roll' : 'Use'}</button></div>`);
+    });
+    known.forEach((sp) => {
+      const k = spellAct(sp);
+      if (!k) return;
+      const g = costOf.get(sp.i);
+      const cost = g ? costText(ch, d, g.res, g.costN, g.costRes) : sp.lvl ? ord(sp.lvl) + '-level slot' : 'Cantrip';
+      rows[k].push(html`<div class="row act-row"><span class="main"><span class="title" style="display:block">${sp.n}</span><span class="sub" style="display:block;white-space:normal">Spell · ${cost}${sp.conc ? ' · concentration' : ''}</span></span>
+        <button type="button" class="btn btn-sm" data-act="spell" data-i="${sp.i}">Cast</button></div>`);
+    });
+    const count = (k) => rows[k].length + (k === 'action' ? attacks.length : 0);
+    return html`<div class="card"><div class="card-title"><h3>Actions</h3><span class="small muted">${d.acNote}${d.critMin < 20 ? ` · crits on ${d.critMin}–20` : ''}${d.extraAttacks ? ` · ${1 + d.extraAttacks} attacks per Attack action` : ''}</span></div>
+      ${d.toggles.length ? html`<div class="chips">${d.toggles.map((t) => html`<button type="button" class="chip fx-toggle" data-act="fx" data-k="${t.key}" aria-pressed="${t.on}" ${edit ? '' : 'disabled'}><b>${t.feat}</b> ${t.on ? 'on' : 'off'}${t.text.replace(/, when switched on$/, '').replace(/^no change on .*/, '') ? ' · ' + t.text.replace(/, when switched on$/, '') : ''}</button>`)}</div>` : ''}
+      <div class="seg full act-tabs" role="tablist">${ACT_TABS.map(([k, label]) => html`<button type="button" role="tab" data-act="act-tab" data-t="${k}" aria-pressed="${tab === k}" aria-selected="${tab === k}">${label}${count(k) ? ` · ${count(k)}` : ''}</button>`)}</div>
+      <div class="list">${tab === 'action' ? attacks : ''}${rows[tab]}${!count(tab) ? html`<p class="hint">${{ action: 'Nothing here yet.', bonus: 'No bonus actions yet.', reaction: 'No reactions yet.', other: 'Nothing here: this is for things like Action Surge, Metamagic or Divine Smite that happen on top of an action.' }[tab]}</p>` : ''}</div></div>`;
+  }
+  // replace LVL, PB and ability names in a roll, e.g. "1d6+WIS" or "2d8+LVL"
+  function rollExprFor(d, ex) {
+    return String(ex || '').replace(/\bLVL\b/g, d.level).replace(/\bPB\b/g, d.pb).replace(/\b(STR|DEX|CON|INT|WIS|CHA)\b/g, (m) => '(' + d.mods[m.toLowerCase()] + ')').replace(/\+\(-/g, '-').replace(/[()]/g, '');
   }
 
   function damageHero(ch, n) {
@@ -874,15 +924,34 @@ const UI = (() => {
         Store.Act.patchChar(ch.id, { inv });
         return;
       }
-      case 'class-act': {
-        const x = d.actions[Number(b.dataset.i)];
+      case 'act-tab':
+        H.actTab = b.dataset.t;
+        return renderPanel('heroes', true);
+      case 'ab-read': {
+        const x = d.abilities[Number(b.dataset.i)];
         if (!x) return;
-        if (x.uses) useResource(ch, x.uses);
-        if (x.roll) {
-          const r = Core.roll(x.roll);
-          postRoll({ who, label: x.n + (x.heal ? ' · healing' : ''), rolls: [mk(r, x.heal ? 'Healing' : '')] });
+        const text = x.featId && D.features && D.features[x.featId] ? D.features[x.featId].d : x.desc;
+        return openText(abilityName(x), [text, [costText(ch, d, x.res, x.n, x.resName), x.note].filter(Boolean).join(' · ')].filter(Boolean).join('\n\n'));
+      }
+      case 'ab-use': {
+        const x = d.abilities[Number(b.dataset.i)];
+        if (!x) return;
+        const name = abilityName(x);
+        if (x.res && x.n !== 0) {
+          const r = d.resources.find((rr) => rr.key === x.res);
+          const used = Object.assign({}, ch.res || {});
+          const left = r ? r.max - Math.min(r.max, used[x.res] || 0) : 0;
+          const n = Math.max(1, x.n || 1);
+          if (left < n) return toast(`Not enough ${r ? r.n.toLowerCase() : x.resName} left.`, 'warn');
+          used[x.res] = (used[x.res] || 0) + n;
+          Store.Act.patchChar(ch.id, { res: used });
+        }
+        const ex = rollExprFor(d, x.roll);
+        if (ex && Core.parseDice(ex)) {
+          const r = Core.roll(ex);
+          postRoll({ who, label: name + (x.heal ? ' · healing' : ''), rolls: [mk(r, x.heal ? 'Healing' : '')] });
           if (x.heal && r) healHero(ch, r.t);
-        } else Store.Act.log({ kind: 'sys', who, label: `${who} uses ${x.n}: ${x.text}` });
+        } else Store.Act.log({ kind: 'sys', who, label: `${who} uses ${name}${x.note ? ': ' + x.note : ''}.` });
         return;
       }
       case 'hb-read': {
@@ -1156,6 +1225,12 @@ const UI = (() => {
         ${d.choices.map((ch2) => {
           const cur = (c.picks || {})[ch2.key] || [];
           const full = cur.length >= ch2.n;
+          if (ch2.kind === 'options') {
+            const nm = (o) => o.name || (o.srd && D.features && D.features[o.id] ? D.features[o.id].n.replace(/^[^:]*:\s*/, '') : titleCase(o.id.replace(/-/g, ' ')));
+            const info = (o) => (o.srd && D.features && D.features[o.id] ? D.features[o.id].d : o.desc) || '';
+            return html`<div class="field"><span>${ch2.label}: choose ${ch2.n} (${cur.length} chosen)</span><div class="chips">${ch2.options.map((o) => html`<button type="button" class="chip" data-act="pick" data-k="${ch2.key}" data-v="${o.id}" data-n="${ch2.n}" aria-pressed="${cur.includes(o.id)}" title="${String(info(o)).slice(0, 300)}" ${cur.includes(o.id) || !full ? '' : 'disabled'}>${nm(o)}</button>`)}</div>
+              <p class="hint">Hover or long-press an option to read it. Chosen options appear on the sheet under Actions or Features.</p></div>`;
+          }
           if (ch2.kind === 'skills') {
             return html`<div class="field"><span>${ch2.label}: choose ${ch2.n} skill${ch2.n === 1 ? '' : 's'} (${cur.length} chosen)</span><div class="chips">${ch2.from.map((sk) => html`<button type="button" class="chip" data-act="pick" data-k="${ch2.key}" data-v="${sk}" data-n="${ch2.n}" aria-pressed="${cur.includes(sk)}" ${cur.includes(sk) || !full ? '' : 'disabled'}>${R.skills[sk].n}</button>`)}</div></div>`;
           }
@@ -1531,7 +1606,9 @@ const UI = (() => {
         const edit = hero && canEditChar(hero);
         const R = D.rules;
         let castBox = '';
-        if (d && d.cast && edit) {
+        const paid = hero && d && d.grantedCost.find((g) => g.id === sp.i && (g.costN || g.costRes));
+        if (paid && edit) castBox = html`<div class="card"><div class="btn-row"><button type="button" class="btn btn-primary" data-act="cast-cost">Cast: ${costText(hero, d, paid.res, paid.costN, paid.costRes).replace(/^Costs /, 'spend ')}</button></div><p class="hint">From ${paid.src}${paid.note ? ' · ' + paid.note : ''}. No spell slot needed.</p></div>`;
+        else if (d && d.cast && edit) {
           const used = hero.slots || {};
           const lvOpts = [];
           for (let l = Math.max(1, sp.lvl); l <= 9; l++) {
@@ -1561,6 +1638,20 @@ const UI = (() => {
         const d = hero ? Store.derived(hero) : null;
         const who = hero ? hero.name : S.me.nick || 'Someone';
         const lvlTxt = sp.lvl > 0 ? ` (${ord(slot)} level)` : '';
+        if (a === 'cast-cost' && hero) {
+          const g = d.grantedCost.find((x) => x.id === sp.i);
+          if (!g) return;
+          if (g.res) {
+            const r = d.resources.find((rr) => rr.key === g.res);
+            const used = Object.assign({}, hero.res || {});
+            const n = Math.max(1, g.costN || 1);
+            if (!r || r.max - Math.min(r.max, used[g.res] || 0) < n) return toast(`Not enough ${r ? r.n.toLowerCase() : g.costRes} left.`, 'warn');
+            used[g.res] = (used[g.res] || 0) + n;
+            Store.Act.patchChar(hero.id, { res: used });
+          }
+          Store.Act.log({ kind: 'sys', who, label: `${who} casts ${sp.n} (${costText(hero, d, null, g.costN, g.costRes || 'uses') || g.src}).` });
+          return toast(`${sp.n} cast.`);
+        }
         if (a === 'slot-lvl') {
           slot = Number(b.dataset.l);
           return draw();
@@ -2869,6 +2960,7 @@ const UI = (() => {
     saveProf: 'Saving throw proficiency', skillProf: 'Skill proficiency', resource: 'Limited uses (tracker)', crit: 'Wider critical range',
     spells: 'Spells (grant or choose)', skillChoice: 'Choose skill proficiencies', expertise: 'Extra Expertise picks', extraAttack: 'Extra Attack',
     unarmored: 'Unarmored Defense', armorProf: 'Armor training', checkHalf: 'Half proficiency on ability checks',
+    options: 'Choose from options (maneuvers, totems, techniques…)',
   };
   const FX_DEFAULT = {
     attack: { when: 'toggle', filter: 'any', hit: 0, dmg: '' }, ability: { ab: 'str', n: 1 }, ac: { n: 1 }, speed: { n: 5 }, init: { n: 1 },
@@ -2876,9 +2968,11 @@ const UI = (() => {
     resource: { name: '', max: 'pb', reset: 'long' }, crit: { min: 19 },
     spells: { mode: 'choose', count: 2, from: 'any', maxLvl: '1', ab: '', free: false, list: [] }, skillChoice: { n: 2, from: [] }, expertise: { n: 2 },
     extraAttack: { n: 1 }, unarmored: { ab: 'con' }, armorProf: { cat: 'Medium' }, checkHalf: { abs: ['str', 'dex', 'con'] },
+    options: { label: '', n: 1, more: '', options: [] },
   };
   const ROW_DEFAULT = {
-    features: () => ({ lvl: '1', name: '', desc: '', effects: [] }),
+    features: () => ({ lvl: '1', name: '', desc: '', act: '', costRes: '', costN: '', roll: '', note: '', effects: [] }),
+    options: () => ({ id: Store.uid('o'), name: '', desc: '', act: '', costRes: '', costN: '', roll: '', note: '', effects: [] }),
     traits: () => ({ n: '', d: '' }),
     legend: () => ({ n: '', d: '' }),
     react: () => ({ n: '', d: '' }),
@@ -2955,7 +3049,7 @@ const UI = (() => {
   }
 
   /* ---- form pieces: every input carries data-path */
-  const fText = (path, label, ph, max) => html`<label class="field"><span>${label}</span><input type="text" id="${pid(path)}" data-path="${path}" value="${getPath(HB.draft, path) || ''}" maxlength="${max || 60}" placeholder="${ph || ''}" autocomplete="off"></label>`;
+  const fText = (path, label, ph, max) => html`<label class="field"><span>${label}</span><input type="text" id="${pid(path)}" data-path="${path}" value="${getPath(HB.draft, path) || ''}" maxlength="${max || 60}" placeholder="${ph || ''}" autocomplete="off" ${/costRes$/.test(path) ? raw('list="costNames"') : ''}></label>`;
   const fNum = (path, label, step) => html`<label class="field"><span>${label}</span><input type="number" id="${pid(path)}" data-path="${path}" value="${getPath(HB.draft, path) == null ? '' : getPath(HB.draft, path)}" step="${step || 1}" inputmode="numeric"></label>`;
   const fArea = (path, label, ph, max) => html`<label class="field"><span>${label}</span><textarea id="${pid(path)}" data-path="${path}" maxlength="${max || 3000}" placeholder="${ph || ''}">${getPath(HB.draft, path) || ''}</textarea></label>`;
   const fSel = (path, label, opts) => html`<label class="field"><span>${label}</span><select id="${pid(path)}" data-path="${path}">${opts.map(([v, l]) => html`<option value="${v}" ${String(getPath(HB.draft, path)) === String(v) ? 'selected' : ''}>${l}</option>`)}</select></label>`;
@@ -2985,7 +3079,8 @@ const UI = (() => {
       case 'crit': return fSel(p('min'), 'Critical hit on', [['19', '19–20'], ['18', '18–20']]);
       case 'spells': {
         const lists = [['any', 'Any class’s list'], ...Object.keys(R.classes).filter((k) => R.classes[k].cast).map((k) => [k, R.classes[k].n + ' list'])];
-        const common = html`<div class="grid2">${fSel(p('ab'), 'Cast with', [['', 'The hero’s spellcasting ability'], ...abOpts()])}<div class="field"><span>Free casting</span><div class="chips">${fTog(p('free'), 'Each once per long rest without a slot')}</div></div></div>`;
+        const common = html`<div class="grid2">${fSel(p('ab'), 'Cast with', [['', 'The hero’s spellcasting ability'], ...abOpts()])}<div class="field"><span>Free casting</span><div class="chips">${fTog(p('free'), 'Each once per long rest without a slot')}</div></div></div>
+          <div class="grid3">${fText(p('costRes'), 'Or cast by spending (tracker)', 'Ki points', 40)}${fNum(p('costN'), 'How many')}${fText(p('note'), 'Note', 'Instead of a spell slot', 120)}</div>`;
         if (e.mode === 'fixed') {
           const chosen = Array.isArray(e.list) ? e.list : [];
           const q = (HB.spq || '').toLowerCase();
@@ -3003,6 +3098,10 @@ const UI = (() => {
       case 'unarmored': return fSel(p('ab'), 'AC is 10 + Dex +', [['dex', 'nothing else'], ...abOpts().filter(([a]) => a !== 'dex')]);
       case 'armorProf': return fSel(p('cat'), 'Training with', [['Light', 'Light armor'], ['Medium', 'Medium armor'], ['Heavy', 'Heavy armor'], ['Shield', 'Shields']]);
       case 'checkHalf': return fChips(p('abs'), 'On checks with', abOpts());
+      case 'options':
+        return html`<div class="grid3">${fText(p('label'), 'What the player chooses', 'Maneuvers, Totem animal…', 60)}${fNum(p('n'), 'How many at first')}${fText(p('more'), 'More at higher levels', '7:2, 10:2, 15:2', 60)}</div>
+          <p class="hint">“7:2, 10:2” means 2 more at level 7 and 2 more at level 10. Each option can have its own effects, cost and action type.</p>
+          ${rowsEditor(p('options'), 'Options', 'Option', (q) => html`${fText(q + '.name', 'Name', '', 60)}${fArea(q + '.desc', 'Description', 'In your own words', 2000)}${useFields(q)}${fxEditor(q + '.effects')}`)}`;
     }
     return '';
   }
@@ -3011,7 +3110,7 @@ const UI = (() => {
     const list = getPath(HB.draft, path) || [];
     return html`<div class="fx-box">${list.map((e, i) => html`<div class="fx-row"><div class="card-title"><b>${FX_LABEL[e.t] || e.t}</b><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="hb-del" data-path="${path}" data-i="${i}" aria-label="Remove this effect">${icon('trash')}</button></div>
         ${fxFields(e, path + '.' + i)}<p class="hint fx-sum">${Core.describeEffect(e)}</p></div>`)}
-      <div class="expr-row"><select id="${pid(path)}-type" aria-label="Effect to add">${Core.EFFECT_TYPES.map((t) => html`<option value="${t}">${FX_LABEL[t]}</option>`)}</select><button type="button" class="btn btn-sm" data-act="hb-fx-add" data-path="${path}">${icon('plus')} Add effect</button></div>
+      <div class="expr-row"><select id="${pid(path)}-type" aria-label="Effect to add">${Core.EFFECT_TYPES.filter((t) => !(t === 'options' && /\.options\./.test(path))).map((t) => html`<option value="${t}">${FX_LABEL[t]}</option>`)}</select><button type="button" class="btn btn-sm" data-act="hb-fx-add" data-path="${path}">${icon('plus')} Add effect</button></div>
       ${hint ? html`<p class="hint">${hint}</p>` : ''}</div>`;
   }
   // a list of rows (features, traits, actions) with add/remove
@@ -3020,8 +3119,17 @@ const UI = (() => {
     return html`<div class="card"><div class="card-title"><h3>${title}</h3><button type="button" class="btn btn-sm" data-act="hb-row-add" data-path="${path}">${icon('plus')} ${addLabel}</button></div>
       ${list.length ? list.map((r, i) => html`<div class="fx-row"><div class="card-title"><b>${r.name || r.n || addLabel}</b><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="hb-del" data-path="${path}" data-i="${i}" aria-label="Remove">${icon('trash')}</button></div>${rowFn(path + '.' + i, r)}</div>`) : html`<p class="hint">None yet.</p>`}</div>`;
   }
+  // how an ability is used: action type, cost from a tracker, a roll, a short note
+  const USE_ACTS = [['', 'Always on (not an action)'], ['action', 'Action'], ['bonus', 'Bonus action'], ['reaction', 'Reaction'], ['other', 'Other / special']];
+  const COST_NAMES = ['Ki points', 'Sorcery points', 'Rage', 'Channel Divinity', 'Bardic Inspiration', 'Superiority dice', 'Wild Shape', 'Lay on Hands', 'Action Surge'];
+  const at = (p, k) => (p ? p + '.' + k : k);
+  const useFields = (p) => html`<div class="use-box"><div class="label">How it’s used (optional)</div>
+    <div class="grid3">${fSel(at(p, 'act'), 'Used as', USE_ACTS)}${fText(at(p, 'costRes'), 'Costs (tracker name)', 'Ki points', 40)}${fNum(at(p, 'costN'), 'How many')}</div>
+    <div class="grid2">${fText(at(p, 'roll'), 'Roll', '1d8+WIS or 2d6+LVL', 30)}${fText(at(p, 'note'), 'Short note shown under it', 'Range 60 ft, Wis save', 120)}</div>
+    <p class="hint">The cost uses a tracker with that name: a class one (Ki points, Sorcery points, Rage…) or one you add with a “Limited uses” effect. In rolls, STR…CHA mean the ability modifier, PB proficiency bonus, LVL the hero’s level.</p></div>
+    <datalist id="costNames">${COST_NAMES.map((n) => html`<option value="${n}"></option>`)}</datalist>`;
   const nameDesc = (p) => html`${fText(p + '.n', 'Name', '', 60)}${fArea(p + '.d', 'Description', 'In your own words', 2000)}`;
-  const featureRow = (p) => html`<div class="grid2">${fNum(p + '.lvl', 'Level')}${fText(p + '.name', 'Name', '', 60)}</div>${fArea(p + '.desc', 'Description', 'What it does, in your own words', 3000)}${fxEditor(p + '.effects', 'Effects switch on when the hero reaches this level.')}`;
+  const featureRow = (p) => html`<div class="grid2">${fNum(p + '.lvl', 'Level')}${fText(p + '.name', 'Name', '', 60)}</div>${fArea(p + '.desc', 'Description', 'What it does, in your own words', 3000)}${useFields(p)}${fxEditor(p + '.effects', 'Effects switch on when the hero reaches this level.')}`;
 
   function hbFormHtml() {
     const f = HB.draft;
@@ -3032,6 +3140,7 @@ const UI = (() => {
         return html`${head}<div class="card"><div class="grid2">${fSel('rarity', 'Rarity', ['common', 'uncommon', 'rare', 'very rare', 'legendary', 'artifact'].map((r) => [r, titleCase(r)]))}${fSel('weapon', 'It’s a weapon', [['', 'Not a weapon'], ...Object.keys(R.weapons).map((k) => [k, R.weapons[k].n])])}</div>
           <div class="chips">${fTog('attune', 'Requires attunement')}</div>
           <p class="hint">An item’s effects work while the hero has it equipped (and attuned, if it needs attunement). A weapon item gets its own attack row on the sheet; use “This item’s own weapon” for bonuses that only apply to it.</p></div>
+          <div class="card">${useFields('')}</div>
           <div class="card"><div class="card-title"><h3>What it does in the app</h3></div>${fxEditor('effects')}</div>`;
       case 'spell':
         return html`${head}<div class="card"><div class="grid3">${fSel('lvl', 'Level', [['0', 'Cantrip'], ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [String(n), ord(n)])])}${fSel('school', 'School', Core.SCHOOLS.map((x) => [x, x]))}${fText('time', 'Casting time', '1 action', 40)}</div>
@@ -3087,7 +3196,7 @@ const UI = (() => {
           ${rowsEditor('features', 'Class features', 'Feature', featureRow)}
           <p class="hint">Proficiency bonus, Ability Score Improvements (levels 4, 8, 12, 16, 19) and spell slots follow the standard tables.</p>`;
       default:
-        return html`${head}<div class="card"><div class="card-title"><h3>What the app does</h3></div>${fxEditor('effects', 'Use “Switch on the sheet” for anything a player chooses to use on a turn: the hero sheet gets an on/off button and the rolls change while it’s on. Things the app can’t track, like reactions or cover, go in the description.')}</div>`;
+        return html`${head}<div class="card">${useFields('')}</div><div class="card"><div class="card-title"><h3>What the app does</h3></div>${fxEditor('effects', 'Use “Switch on the sheet” for anything a player chooses to use on a turn: the hero sheet gets an on/off button and the rolls change while it’s on. Things the app can’t track, like reactions or cover, go in the description.')}</div>`;
     }
   }
   function hbEditHtml() {

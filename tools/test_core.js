@@ -239,4 +239,38 @@ const hbf = { id: 'n1', name: 'Test Adept', effects: [{ t: 'spells', mode: 'choo
 d = Core.derive(Object.assign({}, archer, { picks: { n1_0: ['magic-missile', 'shield'] } }), R, [hbf]);
 eq(d.granted.map((g) => [g.id, g.ab, g.free]), [['magic-missile', 'int', true], ['shield', 'int', true]]); eq(d.extraAttacks, 1); eq(d.ac, 10 + 3 + 1, 'unarmored with wis');
 Core._setRng((sides) => 1); eq(Core.roll('2d6', { reroll: 2 }).t, 2, 'reroll keeps the second roll'); Core._setRng(null);
+
+// ---- abilities byAct action type, SRD option lists, homebrew option lists (made-up test content)
+const metaSorc = { cls: 'sorcerer', level: 10, race: 'human', base: { str: 8, dex: 14, con: 14, int: 10, wis: 10, cha: 16 } };
+d = Core.derive(metaSorc, R);
+const metaCh = d.choices.find((x) => x.label === 'Metamagic');
+eq(metaCh.n, 3, 'metamagic: 2 + 1 at 10'); eq(metaCh.options.length, 8);
+d = Core.derive(Object.assign({}, metaSorc, { picks: { [metaCh.key]: ['metamagic-quickened-spell', 'metamagic-twinned-spell'] } }), R);
+const qk = d.abilities.find((a) => a.featId === 'metamagic-quickened-spell');
+eq([qk.act, qk.res, qk.n], ['other', 'sorcery', 2]); eq(d.abilities.find((a) => a.featId === 'metamagic-twinned-spell').n, 0);
+const pactLock = { cls: 'warlock', level: 5, race: 'human', base: { str: 8, dex: 14, con: 14, int: 10, wis: 10, cha: 16 } };
+d = Core.derive(pactLock, R);
+eq(d.choices.map((x) => [x.label, x.n]), [['Eldritch Invocations', 3], ['Pact Boon', 1]]);
+const kiMonk = { cls: 'monk', level: 6, race: 'human', base: { str: 10, dex: 16, con: 14, int: 10, wis: 15, cha: 8 } };
+d = Core.derive(kiMonk, R);
+const byAct = (act) => d.abilities.filter((a) => a.act === act).map((a) => a.key);
+ok(byAct('bonus').includes('srd-flurry-of-blows') && byAct('bonus').includes('srd-patient-defense'), 'ki bonus actions');
+ok(byAct('reaction').includes('srd-deflect-missiles'), 'deflect missiles is a reaction');
+eq(d.abilities.find((a) => a.key === 'srd-flurry-of-blows').res, 'ki');
+d = Core.derive({ cls: 'fighter', level: 3, race: 'human', base: {} }, R);
+eq(d.abilities.find((a) => a.key === 'ca-second-wind').act, 'bonus'); eq(d.abilities.find((a) => a.key === 'srd-action-surge').act, 'other');
+// a homebrew subclass-style source with an options list and a costed feature
+const shadeSrc = { id: 'sh', kind: 'feature', name: 'Shade Arts', act: 'action', costRes: 'Ki points', costN: 2, note: 'Cast a spell from the list',
+  effects: [{ t: 'options', label: 'Shade Tricks', n: 1, more: '6:1', options: [{ id: 'o1', name: 'Dark Step', act: 'bonus', costRes: 'ki', costN: 1, roll: '1d6+WIS', effects: [{ t: 'speed', n: 10 }] }, { id: 'o2', name: 'Gloom Ward', act: 'reaction', effects: [{ t: 'ac', n: 1 }] }] }] };
+d = Core.derive(kiMonk, R, [shadeSrc]);
+const trickCh = d.choices.find((x) => x.label === 'Shade Tricks');
+eq(trickCh.n, 2, 'option count grows at 6'); eq(trickCh.options.map((o) => o.name), ['Dark Step', 'Gloom Ward']);
+const sp0 = Core.derive(kiMonk, R).speed;
+d = Core.derive(Object.assign({}, kiMonk, { picks: { [trickCh.key]: ['o1'] } }), R, [shadeSrc]);
+eq(d.speed, sp0 + 10, 'chosen option applies its effects');
+const hbA = d.abilities.find((a) => a.key === 'hb-sh'); eq([hbA.act, hbA.res, hbA.n], ['action', 'ki', 2], 'cost written as "Ki points" resolves to the ki tracker');
+const optA = d.abilities.find((a) => a.name === 'Dark Step'); eq([optA.act, optA.res, optA.n, optA.roll], ['bonus', 'ki', 1, '1d6+WIS']);
+ok(!d.abilities.some((a) => a.name === 'Gloom Ward'), 'unchosen options are not abilities');
+d = Core.derive(Object.assign({}, kiMonk, { picks: { n9_0: ['shield'] } }), R, [{ id: 'n9', name: 'Shadow Casting', effects: [{ t: 'spells', mode: 'choose', count: 1, from: 'any', maxLvl: 1, costRes: 'ki', costN: 2 }] }]);
+eq(d.grantedCost.map((g) => [g.id, g.res, g.costN]), [['shield', 'ki', 2]]);
 console.log('core tests passed:', n);

@@ -67,6 +67,10 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
 - SRD class mechanics live in `Core.builtinSources` / `classActions` as the same effect sources homebrew
   uses (Rage, Reckless Attack, Champion, Magical Secrets, Lore, Life domain, fighting styles via `c.styles`).
   Choices a feature or feat asks for are `d.choices`; the player's picks are `c.picks[effectKey]`.
+- Action economy: `d.abilities` (act: action/bonus/reaction/other, cost tracker `res` + `n`, roll, note) from
+  `SRD_USE` (SRD features), SRD option lists (`srdOptionSources`: Metamagic, invocations, pact boon, Hunter,
+  dragon ancestor, Land), class actions, and homebrew feats/items/features/options with `act`/`costRes`/`costN`.
+  "Choose from options" is the `options` effect (`expandOptions`); costs resolve to trackers by name.
 - Inventories: hero `ch.inv` [{id, n, q, note, hb, eq, at}] and `ch.coins`; party items `party/*`,
   party coins `game/state.coins`.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,

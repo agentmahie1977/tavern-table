@@ -1713,7 +1713,10 @@ const Store = (() => {
     const fromSource = (f, kind) => {
       if (!f || f.kind !== kind) return;
       (Array.isArray(f.features) ? f.features : []).slice(0, 40).forEach((ft, k) => {
-        if (ft && Array.isArray(ft.effects) && ft.effects.length && Core.clamp(Number(ft.lvl) || 1, 1, 20) <= level) add({ id: f.id + 'f' + k, kind: 'feature', name: ft.name || 'Feature', effects: ft.effects });
+        // a feature counts when it does something: effects, or a way to use it (action, cost, roll)
+        if (ft && Core.clamp(Number(ft.lvl) || 1, 1, 20) <= level && ((Array.isArray(ft.effects) && ft.effects.length) || ft.act)) {
+          add({ id: f.id + 'f' + k, kind: 'feature', name: ft.name || 'Feature', desc: ft.desc || '', act: ft.act, costRes: ft.costRes, costN: ft.costN, roll: ft.roll, note: ft.note, effects: Array.isArray(ft.effects) ? ft.effects : [] });
+        }
       });
     };
     if (/^hb-/.test(ch.cls || '')) fromSource(S.hb.get(ch.cls.slice(3)), 'class');
