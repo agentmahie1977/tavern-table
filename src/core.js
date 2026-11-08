@@ -1072,6 +1072,167 @@ const Core = (() => {
     return [cx + ux * k, cy + uy * k];
   }
 
+  /* ---------------------------------------------------- fog of war */
+  // Pixel center [cx, cy] of a token on the grid (tok.px/tok.py override it during a live drag)
+  function tokenCenter(tok, grid) {
+    const g = grid.size || 40;
+    const s = Math.max(0.5, Number(tok.size) || 1);
+    const cx = typeof tok.px === 'number' ? tok.px : (grid.ox || 0) + ((tok.c || 0) + s / 2) * g;
+    const cy = typeof tok.py === 'number' ? tok.py : (grid.oy || 0) + ((tok.r || 0) + s / 2) * g;
+    return [cx, cy];
+  }
+  // A token's vision in feet (default 60) as a pixel radius from its center
+  function visionRadiusPx(tok, grid, defaultFt) {
+    const g = grid.size || 40;
+    const ft = Math.max(0, Number(tok.vision != null ? tok.vision : defaultFt != null ? defaultFt : 60));
+    return (ft / 5) * g + (Math.max(1, Math.round(tok.size || 1)) * g) / 2;
+  }
+  // Ray (ox,oy) + t*(dx,dy) against wall {x1,y1,x2,y2} or [x1,y1,x2,y2]: {x,y,t} or null
+  function raySegmentHit(ox, oy, dx, dy, maxDist, seg) {
+    const x1 = Array.isArray(seg) ? seg[0] : seg.x1;
+    const y1 = Array.isArray(seg) ? seg[1] : seg.y1;
+    const sx = (Array.isArray(seg) ? seg[2] : seg.x2) - x1;
+    const sy = (Array.isArray(seg) ? seg[3] : seg.y2) - y1;
+    const denom = sx * dy - sy * dx;
+    if (Math.abs(denom) < 1e-8) return null;
+    const u = (dx * (y1 - oy) + dy * (ox - x1)) / denom;
+    if (u < -1e-6 || u > 1 + 1e-6) return null;
+    const t = Math.abs(dx) > Math.abs(dy) ? (x1 + sx * u - ox) / dx : (y1 + sy * u - oy) / dy;
+    if (t < 0 || t > maxDist) return null;
+    return { x: ox + dx * t, y: oy + dy * t, t };
+  }
+  // Line-of-sight polygon [[x,y], ...] around (ox,oy), clipped by walls
+  function visibilityPolygon(ox, oy, radiusPx, walls, perimeterSteps) {
+    const steps = perimeterSteps || 72;
+    const segs = Array.isArray(walls) ? walls : [];
+    const angles = [];
+    for (let i = 0; i < steps; i++) angles.push((i / steps) * Math.PI * 2 - Math.PI);
+    // extra rays just either side of wall ends, to see cleanly around corners
+    const r2 = radiusPx * radiusPx;
+    segs.forEach((sg) => {
+      const pts = Array.isArray(sg) ? [[sg[0], sg[1]], [sg[2], sg[3]]] : [[sg.x1, sg.y1], [sg.x2, sg.y2]];
+      pts.forEach(([px, py]) => {
+        const dx = px - ox;
+        const dy = py - oy;
+        if (dx * dx + dy * dy <= r2 * 2.25) {
+          const a = Math.atan2(dy, dx);
+          angles.push(a - 0.00015, a, a + 0.00015);
+        }
+      });
+    });
+    angles.sort((a, b) => a - b);
+    const poly = [];
+    for (let i = 0; i < angles.length; i++) {
+      const a = angles[i];
+      if (i > 0 && a - angles[i - 1] < 1e-5) continue;
+      const dx = Math.cos(a);
+      const dy = Math.sin(a);
+      let bestT = radiusPx;
+      let bx = ox + dx * radiusPx;
+      let by = oy + dy * radiusPx;
+      for (const sg of segs) {
+        const hit = raySegmentHit(ox, oy, dx, dy, bestT, sg);
+        if (hit && hit.t < bestT) {
+          bestT = hit.t;
+          bx = hit.x;
+          by = hit.y;
+        }
+      }
+      poly.push([bx, by]);
+    }
+    return poly;
+  }
+  // Point in polygon (even-odd rule)
+  function inPolygon(poly, px, py) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  // Grid cells [c, r] that player tokens can see: within vision (grid distance, '5' or '5-10') and not behind walls
+  function visibleCells(tokens, grid, walls, opts) {
+    const list = Array.isArray(tokens) ? tokens : tokens ? [tokens] : [];
+    const g = grid.size || 40;
+    const ox = grid.ox || 0;
+    const oy = grid.oy || 0;
+    const rule = (opts && opts.rule) || '5';
+    const defaultFt = opts && opts.defaultVisionFt != null ? opts.defaultVisionFt : 60;
+    const seen = new Set();
+    const out = [];
+    list.forEach((tok) => {
+      if (!tok) return;
+      const ft = Math.max(0, Number(tok.vision != null ? tok.vision : defaultFt));
+      const [cx, cy] = tokenCenter(tok, grid);
+      const poly = walls && walls.length ? visibilityPolygon(cx, cy, visionRadiusPx(tok, grid, defaultFt), walls) : null;
+      const tCells = tokenCells(tok); // once per token, not once per cell
+      const maxCells = Math.ceil(ft / 5) + Math.max(1, Math.round(tok.size || 1));
+      const baseC = Math.floor((cx - ox) / g);
+      const baseR = Math.floor((cy - oy) / g);
+      for (let dc = -maxCells; dc <= maxCells; dc++) {
+        for (let dr = -maxCells; dr <= maxCells; dr++) {
+          const c = baseC + dc;
+          const r = baseR + dr;
+          const key = c + ',' + r;
+          if (seen.has(key)) continue;
+          if (tCells.reduce((best, [tc, tr]) => Math.min(best, distanceFt(c - tc, r - tr, rule)), Infinity) > ft) continue;
+          if (poly && !inPolygon(poly, ox + (c + 0.5) * g, oy + (r + 0.5) * g)) continue;
+          seen.add(key);
+          out.push([c, r]);
+        }
+      }
+    });
+    return out;
+  }
+  // Persistent fog: { enabled, explored, visible, ManualReveal, ManualHide, polygons, history }
+  const FOG_HISTORY_MAX = 400;
+  function createFogState(initial) {
+    return Object.assign({ enabled: true, explored: {}, visible: {}, ManualReveal: {}, ManualHide: {}, polygons: [], history: [] }, initial || {});
+  }
+  function stepFog(state, playerTokens, grid, walls, opts) {
+    const st = state || createFogState();
+    const list = (Array.isArray(playerTokens) ? playerTokens : playerTokens ? [playerTokens] : []).filter(Boolean);
+    const defaultFt = opts && opts.defaultVisionFt != null ? opts.defaultVisionFt : 60;
+    st.visible = {};
+    st.polygons = [];
+    list.forEach((tok) => {
+      const [cx, cy] = tokenCenter(tok, grid);
+      const r = visionRadiusPx(tok, grid, defaultFt);
+      const poly = visibilityPolygon(cx, cy, r, walls);
+      st.polygons.push({ id: tok.id || null, cx, cy, r, poly });
+      // breadcrumb when this token (not just any token) has moved 4px or its vision changed
+      let prev = null;
+      for (let i = st.history.length - 1; i >= 0; i--) {
+        if (st.history[i].id === (tok.id || null)) {
+          prev = st.history[i];
+          break;
+        }
+      }
+      if (!prev || Math.hypot(prev.cx - cx, prev.cy - cy) > 4 || prev.r !== r) st.history.push({ id: tok.id || null, cx, cy, r, poly });
+    });
+    if (st.history.length > FOG_HISTORY_MAX) st.history.splice(0, st.history.length - FOG_HISTORY_MAX); // keep it bounded
+    visibleCells(list, grid, walls, opts).forEach(([c, r]) => {
+      const k = c + ',' + r;
+      if (!st.ManualHide[k]) {
+        st.visible[k] = true;
+        st.explored[k] = true;
+      }
+    });
+    Object.keys(st.ManualReveal).forEach((k) => {
+      st.visible[k] = true;
+      st.explored[k] = true;
+    });
+    return st;
+  }
+  // Whether a monster/NPC token is in sight of any player (always true when fog is off)
+  function tokenVisibleToPlayers(tok, fogState) {
+    if (!fogState || !fogState.enabled) return true;
+    if (tok.player || tok.ally || tok.alwaysVisible) return true;
+    return tokenCells(tok).some(([c, r]) => !!fogState.visible[c + ',' + r]);
+  }
+
   return {
     ABILS, ABIL_NAME, ABIL_SHORT, SIZE_CELLS, STANDARD_ARRAY, POINT_COST, XP_THRESH, MINUS,
     clamp, abMod, fmtMod, exprMod, parseDice, termsToExpr, roll, d20Expr, critExpr, avgExpr, maxExpr, cleanExpr,
@@ -1080,6 +1241,7 @@ const Core = (() => {
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
     EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
     STYLES, LIFE_SPELLS, SRD_USE, optionCount, expandOptions, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
+    tokenCenter, visionRadiusPx, raySegmentHit, visibilityPolygon, inPolygon, visibleCells, createFogState, stepFog, tokenVisibleToPlayers,
     _setRng: (f) => { rng = f; },
   };
 })();

@@ -273,4 +273,19 @@ const optA = d.abilities.find((a) => a.name === 'Dark Step'); eq([optA.act, optA
 ok(!d.abilities.some((a) => a.name === 'Gloom Ward'), 'unchosen options are not abilities');
 d = Core.derive(Object.assign({}, kiMonk, { picks: { n9_0: ['shield'] } }), R, [{ id: 'n9', name: 'Shadow Casting', effects: [{ t: 'spells', mode: 'choose', count: 1, from: 'any', maxLvl: 1, costRes: 'ki', costN: 2 }] }]);
 eq(d.grantedCost.map((g) => [g.id, g.res, g.costN]), [['shield', 'ki', 2]]);
+
+// ---- fog of war
+const fg = { size: 10, ox: 0, oy: 0 };
+const ftok = { id: 'p1', c: 5, r: 5, size: 1, vision: 20 };
+let vis = Core.visibleCells([ftok], fg, [], {}).map(([c, r]) => c + ',' + r);
+ok(vis.includes('9,5') && !vis.includes('10,5'), 'vision 20 ft = 4 squares');
+vis = Core.visibleCells([ftok], fg, [[70, 0, 70, 120]], {}).map(([c, r]) => c + ',' + r);
+ok(vis.includes('6,5') && !vis.includes('8,5'), 'a wall blocks sight');
+const fs = Core.stepFog(null, [ftok], fg, [], {});
+ok(fs.visible['5,5'] && fs.explored['9,5']); eq(fs.history.length, 1);
+Core.stepFog(fs, [Object.assign({}, ftok, { c: 20 })], fg, [], {});
+ok(!fs.visible['5,5'] && fs.explored['5,5'], 'explored stays after moving away'); eq(fs.history.length, 2);
+eq(Core.tokenVisibleToPlayers({ c: 22, r: 5 }, fs), true); eq(Core.tokenVisibleToPlayers({ c: 40, r: 5 }, fs), false);
+for (let i = 0; i < 500; i++) Core.stepFog(fs, [Object.assign({}, ftok, { c: i % 50 })], fg, [], {});
+ok(fs.history.length <= 400, 'history stays bounded');
 console.log('core tests passed:', n);
