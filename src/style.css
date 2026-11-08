@@ -519,3 +519,15 @@ button.stat:hover { border-color: var(--brass); }
 .fx-row .card-title b { font-size: 14px; }
 .fx-sum { color: var(--brass-hi); margin: 0; }
 .chip.fx-toggle[aria-pressed="true"] { background: rgba(217, 166, 71, 0.22); }
+
+/* inventory */
+.coins { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.coin { display: grid; gap: 2px; text-align: center; font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.coin input { text-align: center; padding: 6px 2px; min-height: 36px; }
+.inv-row { flex-wrap: wrap; }
+.inv-add { display: grid; grid-template-columns: minmax(0, 1fr) 70px; gap: 6px; }
+.inv-add input[id$="Note"] { grid-column: 1 / -1; }
+.inv-add .btn { grid-column: 1 / -1; }
+@media (min-width: 560px) { .inv-add { grid-template-columns: minmax(0, 2fr) 70px minmax(0, 1.4fr) auto; } .inv-add input[id$="Note"], .inv-add .btn { grid-column: auto; } }
+.inv-row .main { flex: 1 1 140px; }
+.inv-row .title { white-space: normal; overflow-wrap: anywhere; }

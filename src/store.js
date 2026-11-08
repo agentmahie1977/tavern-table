@@ -37,6 +37,7 @@ const Store = (() => {
     init: new Map(),
     encs: new Map(),
     hb: new Map(), // homebrew feats, shared by the table
+    party: new Map(), // party inventory items
     log: [],
     peers: [],
     maps: new Map(),
@@ -925,7 +926,7 @@ const Store = (() => {
   };
 
   /* ------------------------------------------------------------ relay */
-  const RELAY_PATH = /^(tokens|templates|log|init|chars|game|homebrew)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
+  const RELAY_PATH = /^(tokens|templates|log|init|chars|game|homebrew|party)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
   const RELAY_MAX = 2300;
   const relay = { seq: 0, ops: [] };
   const execState = { applied: new Map(), lastAck: '' };
@@ -1054,7 +1055,7 @@ const Store = (() => {
 
   /* ---------------------------------------------------- subscriptions */
   const loadedSet = new Set();
-  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'hb', 'log'];
+  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'hb', 'party', 'log'];
   let loadTimer = 0;
   function markLoaded(name, meta) {
     if (meta && meta.fromCache) return;
@@ -1113,6 +1114,7 @@ const Store = (() => {
     col('init', 'init', 'init');
     col('encounters', 'encs', 'encs');
     col('homebrew', 'hb', 'homebrew');
+    col('party', 'party', 'party');
     B.watchCol('log', { orderBy: 'ts', dir: 'desc', limit: 80 }, (rows, meta) => {
       const list = rows.map((r) => Object.assign({}, r.raw, { id: r.id })).reverse();
       const fresh = [];
@@ -1441,6 +1443,13 @@ const Store = (() => {
       return hid;
     },
     deleteHomebrew: (id) => W.del('homebrew/' + id),
+    partyAdd(doc) {
+      const id = uid('i');
+      W.set('party/' + id, Object.assign({ ts: Date.now() }, doc));
+      return id;
+    },
+    partyPatch: (id, patch) => W.upd('party/' + id, patch),
+    partyDel: (id) => W.del('party/' + id),
     async clearLog() {
       for (const e of S.log) W.del('log/' + e.id);
     },

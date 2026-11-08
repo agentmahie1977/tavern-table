@@ -421,7 +421,113 @@ const UI = (() => {
       ${all.length ? html`<div class="list">${rows}</div>` : html`<div class="empty"><h3>No heroes at this table yet</h3>
         <p class="hint">Build a 5e character from the SRD races and classes. Their token, hit points and spells come with them to the map.</p>
         <button type="button" class="btn btn-primary" data-act="new-hero">${icon('plus')} Create a hero</button></div>`}
-      <p class="hint">Rolls from a hero’s sheet show up for everyone in the dice log.</p>`;
+      <p class="hint">Rolls from a hero’s sheet show up for everyone in the dice log.</p>
+      ${partyCardHtml()}`;
+  }
+
+  /* ---------------------------------------------------- inventory */
+  // Hero items live in the hero (ch.inv, ch.coins); party items are party/* docs, party coins in game/state.
+  const COINS = [['pp', 'Platinum'], ['gp', 'Gold'], ['ep', 'Electrum'], ['sp', 'Silver'], ['cp', 'Copper']];
+  const cleanQty = (v) => Math.max(0, Math.min(9999, Math.floor(Number(v) || 0)));
+  function coinsHtml(coins, prefix, edit) {
+    const c = coins || {};
+    return html`<div class="coins">${COINS.map(([k, n]) => html`<label class="coin"><span>${k}</span><input type="number" id="${prefix}-${k}" data-coin="${k}" value="${cleanQty(c[k])}" min="0" max="9999" inputmode="numeric" aria-label="${n} pieces" ${edit ? '' : 'readonly'}></label>`)}</div>`;
+  }
+  function itemSuggestions() {
+    const R = D.rules;
+    const names = new Set();
+    if (R) {
+      Object.values(R.weapons).forEach((w) => names.add(w.n));
+      Object.values(R.armor).forEach((a) => names.add(a.n));
+    }
+    S.hb.forEach((f) => f.kind === 'item' && f.name && names.add(f.name));
+    return html`<datalist id="itemNames">${[...names].sort().map((n) => html`<option value="${n}"></option>`)}</datalist>`;
+  }
+  function itemRow(it, i, edit, scope) {
+    return html`<div class="row inv-row"><span class="main"><span class="title" style="display:block">${it.n || 'Item'}</span>${it.note ? html`<span class="sub" style="display:block">${it.note}</span>` : ''}</span>
+      <div class="stepper"><button type="button" data-act="${scope}-q" data-i="${i}" data-d="-1" aria-label="One fewer" ${edit && cleanQty(it.q) > 0 ? '' : 'disabled'}>−</button><span class="val num">${cleanQty(it.q)}</span><button type="button" data-act="${scope}-q" data-i="${i}" data-d="1" aria-label="One more" ${edit ? '' : 'disabled'}>+</button></div>
+      ${edit ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-move" data-i="${i}">${scope === 'inv' ? 'To party' : 'Take'}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="${scope}-del" data-i="${i}" aria-label="Remove ${it.n || 'item'}">${icon('trash')}</button>` : ''}</div>`;
+  }
+  function addItemHtml(scope) {
+    return html`<div class="inv-add"><input type="text" id="${scope}Name" list="itemNames" maxlength="60" placeholder="Add an item: rope, potion, Longsword…" autocomplete="off" aria-label="Item name">
+      <input type="number" id="${scope}Qty" value="1" min="1" max="9999" inputmode="numeric" aria-label="How many" style="width:70px">
+      <input type="text" id="${scope}Note" maxlength="120" placeholder="Note (optional)" autocomplete="off" aria-label="Note">
+      <button type="button" class="btn" data-act="${scope}-add">${icon('plus')} Add</button></div>`;
+  }
+  function invCardHtml(ch, edit) {
+    const inv = Array.isArray(ch.inv) ? ch.inv : [];
+    return html`<div class="card"><div class="card-title"><h3>Inventory</h3><span class="small muted">${inv.length ? plural(inv.length, 'item') : ''}</span></div>
+      ${coinsHtml(ch.coins, 'coin', edit)}
+      ${inv.length ? html`<div class="list">${inv.map((it, i) => itemRow(it, i, edit, 'inv'))}</div>` : html`<p class="hint">Nothing carried yet.</p>`}
+      ${edit ? addItemHtml('inv') : ''}</div>`;
+  }
+  function partyItems() {
+    return [...S.party.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  }
+  function partyCardHtml() {
+    const edit = !S.readOnly;
+    const items = partyItems();
+    return html`<div class="card"><div class="card-title"><h3>Party inventory</h3><span class="small muted">Shared by everyone</span></div>
+      ${coinsHtml(S.game.coins, 'pcoin', edit)}
+      ${items.length ? html`<div class="list">${items.map((it, i) => itemRow(it, i, edit, 'party'))}</div>` : html`<p class="hint">The party’s shared loot goes here.</p>`}
+      ${edit ? addItemHtml('party') : ''}</div>${itemSuggestions()}`;
+  }
+  // reads the add-item fields of a scope ("inv" or "party")
+  function readNewItem(scope) {
+    const name = String(($('#' + scope + 'Name') || {}).value || '').trim().slice(0, 60);
+    if (!name) {
+      toast('Type the item’s name first.', 'warn');
+      const n = $('#' + scope + 'Name');
+      if (n) n.focus();
+      return null;
+    }
+    const hbItem = [...S.hb.values()].find((f) => f.kind === 'item' && f.name === name);
+    const it = { id: Store.uid('v'), n: name, q: Math.max(1, cleanQty(($('#' + scope + 'Qty') || {}).value) || 1), note: String(($('#' + scope + 'Note') || {}).value || '').trim().slice(0, 120) };
+    if (hbItem) it.hb = hbItem.id;
+    // empty the fields so the next item starts fresh
+    ['Name', 'Note'].forEach((f) => {
+      const el = $('#' + scope + f);
+      if (el) el.value = '';
+    });
+    const qty = $('#' + scope + 'Qty');
+    if (qty) qty.value = '1';
+    return it;
+  }
+  // party actions (Heroes list); returns true when handled
+  function partyAct(a, b) {
+    const items = partyItems();
+    const it = b && b.dataset.i !== undefined ? items[Number(b.dataset.i)] : null;
+    if (a === 'party-add') {
+      const n = readNewItem('party');
+      if (!n) return true;
+      Store.Act.partyAdd({ n: n.n, q: n.q, note: n.note, hb: n.hb || null, by: S.me.pk });
+      renderPanel('heroes', true);
+      return true;
+    }
+    if (!it && /^party-/.test(a)) return true;
+    if (a === 'party-q') {
+      const q = cleanQty(it.q) + Number(b.dataset.d);
+      if (q <= 0) Store.Act.partyDel(it.id);
+      else Store.Act.partyPatch(it.id, { q });
+      return true;
+    }
+    if (a === 'party-del') {
+      confirmSheet(`Remove ${it.n}?`, 'It’s removed from the party inventory for everyone.', 'Remove', () => Store.Act.partyDel(it.id));
+      return true;
+    }
+    if (a === 'party-move') {
+      const hero = myHero();
+      if (!hero || !canEditChar(hero)) {
+        toast('Make or pick your hero first (People and settings → Playing as).', 'warn');
+        return true;
+      }
+      const inv = (Array.isArray(hero.inv) ? hero.inv : []).concat([{ id: Store.uid('v'), n: it.n, q: cleanQty(it.q) || 1, note: it.note || '', hb: it.hb || null }]);
+      Store.Act.patchChar(hero.id, { inv });
+      Store.Act.partyDel(it.id);
+      toast(`${hero.name || 'Your hero'} takes ${it.n}.`);
+      return true;
+    }
+    return false;
   }
 
   /* --------------------------------------------------- hero sheet */
@@ -525,6 +631,7 @@ const UI = (() => {
       ${d.feats.length ? html`<div class="card"><div class="card-title"><h3>Feats</h3></div><div class="list">${d.feats.map((f) => html`<button type="button" class="row tap" data-act="hbfeat" data-id="${f.id}"><span class="main"><span class="title" style="display:block">${f.name}</span><span class="sub" style="display:block">${(f.effects || []).map(Core.describeEffect).filter(Boolean).join(' · ') || 'Description only'}</span></span></button>`)}</div></div>` : ''}
       ${spells}
       ${res.length ? html`<div class="card"><div class="card-title"><h3>Resources</h3></div><div class="list">${res}</div></div>` : ''}
+      ${invCardHtml(ch, edit)}${itemSuggestions()}
       ${d.classSpecific.length ? html`<div class="card"><div class="card-title"><h3>${cls.n} table</h3></div><dl class="kv">${d.classSpecific.map(([k, v]) => html`<dt>${k}</dt><dd class="num">${v}</dd>`)}</dl></div>` : ''}
       <div class="card"><div class="card-title"><h3>Conditions</h3></div><div class="chips">${condList.map((c) => html`<button type="button" class="chip cond" data-act="cond" data-c="${c}" aria-pressed="${conds.includes(c)}" ${edit ? '' : 'disabled'}>${R.conditions[c].n}</button>`)}</div></div>
       <details class="fold"><summary>Features and traits</summary><div class="fold-in">
@@ -555,6 +662,7 @@ const UI = (() => {
 
   function heroAct(a, b) {
     const R = D.rules;
+    if (/^party-/.test(a)) return partyAct(a, b);
     if (a === 'new-hero') return openBuilder(null);
     if (a === 'open-hero') {
       H.view = 'sheet';
@@ -721,6 +829,31 @@ const UI = (() => {
       }
       case 'place-token':
         return placeHeroToken(ch);
+      case 'inv-add': {
+        const it = readNewItem('inv');
+        if (!it) return;
+        Store.Act.patchChar(ch.id, { inv: (Array.isArray(ch.inv) ? ch.inv : []).concat([it]) });
+        return;
+      }
+      case 'inv-q':
+      case 'inv-del':
+      case 'inv-move': {
+        const inv = (Array.isArray(ch.inv) ? ch.inv : []).slice();
+        const i = Number(b.dataset.i);
+        const it = inv[i];
+        if (!it) return;
+        if (a === 'inv-q') {
+          const q = cleanQty(it.q) + Number(b.dataset.d);
+          if (q <= 0) inv.splice(i, 1);
+          else inv[i] = Object.assign({}, it, { q });
+        } else if (a === 'inv-move') {
+          Store.Act.partyAdd({ n: it.n, q: cleanQty(it.q) || 1, note: it.note || '', hb: it.hb || null, by: S.me.pk });
+          inv.splice(i, 1);
+          toast(`${it.n} goes to the party inventory.`);
+        } else inv.splice(i, 1);
+        Store.Act.patchChar(ch.id, { inv });
+        return;
+      }
       case 'fx': {
         const k = b.dataset.k;
         Store.Act.patchChar(ch.id, { fx: { [k]: (ch.fx || {})[k] ? 0 : 1 } });
@@ -785,6 +918,15 @@ const UI = (() => {
   }
   function heroChange(t) {
     if (H.view === 'build') return builderChange(t);
+    if (t.dataset.coin && /^pcoin-/.test(t.id)) {
+      if (!S.readOnly) Store.Act.setGame({ coins: { [t.dataset.coin]: cleanQty(t.value) } });
+      return;
+    }
+    if (t.dataset.coin && /^coin-/.test(t.id)) {
+      const ch = S.chars.get(H.id);
+      if (ch && canEditChar(ch)) Store.Act.patchChar(ch.id, { coins: { [t.dataset.coin]: cleanQty(t.value) } });
+      return;
+    }
     if (t.id === 'heroNotes') {
       const ch = S.chars.get(H.id);
       if (ch && canEditChar(ch)) Store.Act.patchChar(ch.id, { notes: String(t.value).slice(0, 8000) });
@@ -2971,6 +3113,8 @@ const UI = (() => {
     Store.on('data', () => schedule('heroes', 'encounter', 'combat'));
     Store.on('encs', () => schedule('encounter'));
     Store.on('homebrew', () => schedule('homebrew', 'heroes'));
+    Store.on('party', () => schedule('heroes'));
+    Store.on('game', () => schedule('heroes'));
     Store.on('tokens', () => schedule('combat', 'heroes'));
     Store.on('init', () => schedule('combat'));
     let lastTurn = null;
