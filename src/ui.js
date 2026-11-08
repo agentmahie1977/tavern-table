@@ -212,14 +212,18 @@ const UI = (() => {
     postRoll({ who, label: label + ROLL_MODE[m], rolls: [mk(r, '')] });
     return r;
   }
-  function rollAttack(who, name, hit, dmg, ty, mode, extra, critMin) {
-    const m = mode || 'normal';
+  // opts: { gwf: reroll 1s and 2s on the weapon's damage, brutal: extra dice on a crit }
+  function rollAttack(who, name, hit, dmg, ty, mode, extra, critMin, opts) {
+    const o = opts || {};
+    const m = mode && mode !== 'normal' ? mode : o.adv ? 'adv' : 'normal';
     const a = Core.roll(Core.d20Expr(hit, m));
     const crit = a && a.nat >= (critMin || 20);
     const rolls = [mk(a, 'To hit')];
-    (Array.isArray(dmg) ? dmg : [[dmg, ty]]).forEach(([e, t]) => {
+    (Array.isArray(dmg) ? dmg : [[dmg, ty]]).forEach(([e, t], i) => {
       if (!e) return;
-      const d = Core.roll(crit ? Core.critExpr(e) : e);
+      let ex = crit ? Core.critExpr(e) : e;
+      if (crit && i === 0 && o.brutal) ex += '+' + o.brutal;
+      const d = Core.roll(ex, i === 0 && o.gwf ? { reroll: 2 } : null);
       rolls.push(mk(d, crit ? 'Crit damage' : 'Damage', t));
     });
     postRoll(Object.assign({ who, label: name + ROLL_MODE[m], rolls }, extra || {}));
@@ -570,25 +574,35 @@ const UI = (() => {
     }
     // spells
     let spells = '';
-    if (d.cast) {
-      const known = (ch.spells || []).map((i) => D.spellsById && D.spellsById.get(i)).filter(Boolean);
+    const grantedBy = new Map(d.granted.map((g) => [g.id, g]));
+    // casting numbers for spells a feat or feature grants with its own ability
+    const grantCast = !d.cast && d.granted.length ? (() => {
+      const ab = (d.granted.find((g) => g.ab) || {}).ab || 'cha';
+      return { ab, dc: 8 + d.pb + d.mods[ab], atk: d.pb + d.mods[ab], mod: d.mods[ab], slots: [0, 0, 0, 0, 0, 0, 0, 0, 0], maxLvl: 0, granted: true };
+    })() : null;
+    if (d.cast || grantCast) {
+      const castInfo = d.cast || grantCast;
+      const known = [...new Set([...(ch.spells || []), ...d.granted.map((g) => g.id)])].map((i) => D.spellsById && D.spellsById.get(i)).filter(Boolean);
       const byLvl = {};
       known.forEach((sp) => (byLvl[sp.lvl] = byLvl[sp.lvl] || []).push(sp));
       const used = ch.slots || {};
       const lvls = [];
       for (let l = 0; l <= 9; l++) {
-        const total = l ? d.cast.slots[l - 1] || 0 : 0;
+        const total = l ? castInfo.slots[l - 1] || 0 : 0;
         if (!byLvl[l] && !total) continue;
         const pips = [];
         for (let k = 0; k < total; k++) pips.push(html`<button type="button" class="slot-pip ${k < (used[l] || 0) ? 'used' : ''}" data-act="slot" data-l="${l}" data-k="${k}" aria-label="${ord(l)} level slot ${k + 1}" ${edit ? '' : 'disabled'}></button>`);
         lvls.push(html`<div class="spell-lvl"><div class="spell-lvl-head"><h4>${l === 0 ? 'Cantrips' : ord(l) + ' level'}${total ? ` · ${total - (used[l] || 0)} of ${total} slots` : ''}</h4>${total ? html`<div class="slot-pips">${pips}</div>` : ''}</div>
-          ${byLvl[l] ? html`<div class="chips">${byLvl[l].sort((a, b) => a.n.localeCompare(b.n)).map((sp) => html`<button type="button" class="chip" data-act="spell" data-i="${sp.i}">${sp.n}${sp.conc ? ' ©' : ''}${sp.area ? html` ${icon('area')}` : ''}</button>`)}</div>` : html`<p class="hint">No ${l ? ord(l) + '-level spells' : 'cantrips'} chosen.</p>`}</div>`);
+          ${byLvl[l] ? html`<div class="chips">${byLvl[l].sort((a, b) => a.n.localeCompare(b.n)).map((sp) => {
+            const g = grantedBy.get(sp.i);
+            return html`<button type="button" class="chip" data-act="spell" data-i="${sp.i}" title="${g ? 'From ' + g.src : ''}">${sp.n}${sp.conc ? ' ©' : ''}${sp.area ? html` ${icon('area')}` : ''}${g ? html` <span class="muted">${g.always ? '★' : '✦'}</span>` : ''}</button>`;
+          })}</div>` : html`<p class="hint">No ${l ? ord(l) + '-level spells' : 'cantrips'} chosen.</p>`}</div>`);
       }
-      spells = html`<div class="card"><div class="card-title"><h3>Spellcasting</h3><span class="small muted">${Core.ABIL_NAME[d.cast.ab]}</span></div>
-        <div class="statline"><div class="stat"><span class="k">Save DC</span><span class="v">${d.cast.dc}</span></div><button type="button" class="stat" data-act="roll-spellatk" ${edit ? '' : 'disabled'}><span class="k">Spell attack</span><span class="v">${fmtMod(d.cast.atk)}</span></button>${d.cast.pact ? html`<div class="stat"><span class="k">Pact slots</span><span class="v">${ord(d.cast.maxLvl)}</span></div>` : ''}</div>
+      spells = html`<div class="card"><div class="card-title"><h3>Spellcasting</h3><span class="small muted">${Core.ABIL_NAME[castInfo.ab]}</span></div>
+        <div class="statline"><div class="stat"><span class="k">Save DC</span><span class="v">${castInfo.dc}</span></div><button type="button" class="stat" data-act="roll-spellatk" ${edit ? '' : 'disabled'}><span class="k">Spell attack</span><span class="v">${fmtMod(castInfo.atk)}</span></button>${castInfo.pact ? html`<div class="stat"><span class="k">Pact slots</span><span class="v">${ord(castInfo.maxLvl)}</span></div>` : ''}</div>
         ${D.spells ? lvls : html`<p class="hint">Loading spells…</p>`}
         ${!known.length ? html`<p class="hint">No spells chosen yet. ${edit ? 'Edit the hero to pick spells.' : ''}</p>` : ''}
-        <p class="hint">© marks concentration. Tap a spell to cast it, roll it, or place its area on the map.</p></div>`;
+        <p class="hint">© marks concentration${d.granted.length ? ', ★ always prepared (from a feature), ✦ chosen through a feature or feat' : ''}. Tap a spell to cast it, roll it, or place its area on the map.</p></div>`;
     }
     // resources
     const resUsed = ch.res || {};
@@ -637,6 +651,12 @@ const UI = (() => {
         <div class="list">${attacks}</div></div>
       ${d.feats.some((f) => (f.kind || 'feat') === 'feat') ? html`<div class="card"><div class="card-title"><h3>Feats</h3></div><div class="list">${d.feats.filter((f) => (f.kind || 'feat') === 'feat').map((f) => html`<button type="button" class="row tap" data-act="hbfeat" data-id="${f.id}"><span class="main"><span class="title" style="display:block">${f.name}</span><span class="sub" style="display:block">${(f.effects || []).map(Core.describeEffect).filter(Boolean).join(' · ') || 'Description only'}</span></span></button>`)}</div></div>` : ''}
       ${spells}
+      ${d.actions.length ? html`<div class="card"><div class="card-title"><h3>Class actions</h3></div><div class="list">${d.actions.map((x, i) => {
+        const r = x.uses && d.resources.find((rr) => rr.key === x.uses);
+        const left = r ? r.max - Math.min(r.max, (ch.res || {})[r.key] || 0) : null;
+        return html`<div class="row"><span class="main"><span class="title" style="display:block">${x.n}</span><span class="sub" style="display:block;white-space:normal">${x.text}${r ? ` · ${left} of ${r.max} ${r.n.toLowerCase()} left` : ''}</span></span>
+          <button type="button" class="btn btn-sm" data-act="class-act" data-i="${i}" ${edit && (left == null || left > 0) ? '' : 'disabled'}>${x.roll ? 'Roll' : 'Use'}</button></div>`;
+      })}</div></div>` : ''}
       ${res.length ? html`<div class="card"><div class="card-title"><h3>Resources</h3></div><div class="list">${res}</div></div>` : ''}
       ${invCardHtml(ch, edit)}${itemSuggestions()}
       ${d.classSpecific.length ? html`<div class="card"><div class="card-title"><h3>${cls.n} table</h3></div><dl class="kv">${d.classSpecific.map(([k, v]) => html`<dt>${k}</dt><dd class="num">${v}</dd>`)}</dl></div>` : ''}
@@ -712,12 +732,12 @@ const UI = (() => {
         break;
       }
       case 'roll-spellatk':
-        if (d.cast) rollD20(who, 'Spell attack', d.cast.atk, takeMode());
+        if (d.cast || d.granted.length) rollD20(who, 'Spell attack', d.cast ? d.cast.atk : d.pb + d.mods[(d.granted.find((g) => g.ab) || {}).ab || 'cha'], takeMode());
         break;
       case 'roll-atk': {
         const at = d.attacks[Number(b.dataset.i)];
         // feats switched on are already in at.hit / at.dmg; typed extra damage rolls separately
-        if (at) rollAttack(who, at.n + (at.using && at.using.length ? ` (${at.using.join(', ')})` : ''), at.hit, [[at.dmg, at.ty], ...(at.extra || [])], null, takeMode(), null, d.critMin);
+        if (at) rollAttack(who, at.n + (at.using && at.using.length ? ` (${at.using.join(', ')})` : ''), at.hit, [[at.dmg, at.ty], ...(at.extra || [])], null, takeMode(), null, d.critMin, { adv: at.adv, gwf: at.gwf, brutal: at.brutal });
         break;
       }
       case 'breath': {
@@ -759,6 +779,7 @@ const UI = (() => {
         if (ch.cls === 'warlock') patch.slots = zeroKeys(ch.slots);
         Store.Act.patchChar(ch.id, patch);
         postRoll({ who, label: 'Short rest', rolls: [mk(Core.roll('1d' + d.hd + Core.exprMod(d.mods.con)), 'Hit die (spend if needed)')] });
+        if (d.songOfRest) postRoll({ who, label: `Song of Rest: each ally who spends a Hit Die regains this much extra`, rolls: [mk(Core.roll('1' + d.songOfRest), 'Extra healing')] });
         toast('Short rest taken. Roll shown in case you spend a hit die.');
         break;
       }
@@ -851,6 +872,17 @@ const UI = (() => {
         if (k === 'at' && !inv[i].at && inv.filter((x) => x.at).length >= 3) return toast('A hero can be attuned to 3 items at most.', 'warn');
         inv[i] = Object.assign({}, inv[i], { [k]: inv[i][k] ? 0 : 1 });
         Store.Act.patchChar(ch.id, { inv });
+        return;
+      }
+      case 'class-act': {
+        const x = d.actions[Number(b.dataset.i)];
+        if (!x) return;
+        if (x.uses) useResource(ch, x.uses);
+        if (x.roll) {
+          const r = Core.roll(x.roll);
+          postRoll({ who, label: x.n + (x.heal ? ' · healing' : ''), rolls: [mk(r, x.heal ? 'Healing' : '')] });
+          if (x.heal && r) healHero(ch, r.t);
+        } else Store.Act.log({ kind: 'sys', who, label: `${who} uses ${x.n}: ${x.text}` });
         return;
       }
       case 'hb-read': {
@@ -964,7 +996,7 @@ const UI = (() => {
   const DEFAULT_DRAFT = () => ({
     name: '', race: 'human', subrace: '', cls: 'fighter', subclass: '', level: 1, background: 'acolyte', bgSkills: [], method: 'array',
     base: { str: 15, dex: 14, con: 13, int: 12, wis: 10, cha: 8 }, raceChoice: [], raceSkills: [], asi: {}, skills: [], expertise: [], armor: 'none', shield: false,
-    weapons: [], spells: [], feats: [], freeFeats: 0, hpMode: 'avg', hpManual: '', color: S.me.color, portrait: '', ancestry: '', align: '', acBonus: 0, speedBonus: 0, customRes: [], notes: '',
+    weapons: [], spells: [], feats: [], freeFeats: 0, styles: [], picks: {}, hpMode: 'avg', hpManual: '', color: S.me.color, portrait: '', ancestry: '', align: '', acBonus: 0, speedBonus: 0, customRes: [], notes: '',
   });
   function openBuilder(ch) {
     loadSpells();
@@ -1040,7 +1072,7 @@ const UI = (() => {
     });
     const granted = [...bgSk, ...raceSk].map((sk) => R.skills[sk] && html`<span class="chip locked">${R.skills[sk].n}</span>`);
     const profAll = new Set([...picked, ...bgSk, ...raceSk]);
-    const expChips = d.expertiseSlots ? [...profAll].sort().map((sk) => {
+    const expChips = d.expertiseSlots ? [...profAll, ...d.choices.filter((x) => x.kind === 'skills').flatMap((x) => (c.picks || {})[x.key] || [])].filter((v, i, a) => a.indexOf(v) === i).sort().map((sk) => {
       const on = (c.expertise || []).includes(sk);
       return html`<button type="button" class="chip" data-act="exp" data-sk="${sk}" aria-pressed="${on}" ${!on && (c.expertise || []).filter((x) => profAll.has(x)).length >= d.expertiseSlots ? 'disabled' : ''}>${R.skills[sk].n}</button>`;
     }) : null;
@@ -1084,7 +1116,12 @@ const UI = (() => {
           <div class="field"><span>Skill Versatility: two skills</span><div class="chips">${Object.keys(R.skills).map((sk) => html`<button type="button" class="chip" data-act="race-sk" data-sk="${sk}" aria-pressed="${(c.raceSkills || []).includes(sk)}" ${!(c.raceSkills || []).includes(sk) && (c.raceSkills || []).length >= 2 ? 'disabled' : ''}>${R.skills[sk].n}</button>`)}</div></div>` : ''}
         <div class="grid2"><label class="field"><span>Class</span><select id="b-cls" data-field="cls">${clsOpts}</select></label>
           <div class="field"><span>Level</span><div class="stepper"><button type="button" data-act="lvl" data-d="-1" ${lvl > 1 ? '' : 'disabled'} aria-label="Lower level">−</button><span class="val num">${lvl}</span><button type="button" data-act="lvl" data-d="1" ${lvl < 20 ? '' : 'disabled'} aria-label="Raise level">+</button></div></div></div>
-        ${subcls.length ? html`<label class="field"><span>${subcls[0].flavor || 'Subclass'}</span><select id="b-sub" data-field="subclass">${opt('', 'Choose later', c.subclass)}${subcls.map((s) => opt(s.i, s.n, c.subclass))}</select></label>` : html`<p class="hint">${cls.subs[0] ? `${cls.subs[0].flavor} unlocks at level ${cls.subs[0].start}.` : ''}</p>`}
+        ${(() => {
+          const flavor = (cls.subs[0] && cls.subs[0].flavor) || cls.subFlavor || 'Subclass';
+          const startAt = cls.subs.length ? Math.min(...cls.subs.map((x) => x.start)) : cls.subStart || 3;
+          if (!cls.subs.length) return html`<p class="hint">${flavor} at level ${startAt}: there are none for this class yet. Make one in Homebrew → Subclasses.</p>`;
+          return html`<label class="field"><span>${flavor}${lvl < startAt ? ` (from level ${startAt})` : ''}</span><select id="b-sub" data-field="subclass" ${lvl < startAt ? 'disabled' : ''}>${opt('', lvl < startAt ? `Chosen at level ${startAt}` : 'Choose later', c.subclass)}${cls.subs.map((x) => html`<option value="${x.i}" ${x.i === c.subclass ? 'selected' : ''} ${lvl >= x.start ? '' : 'disabled'}>${x.n}${x.hb ? ' (homebrew)' : ''}</option>`)}</select></label>`;
+        })()}
         <div class="grid2"><label class="field"><span>Background</span><select id="b-bg" data-field="background">${Object.keys(R.backgrounds).map((k) => opt(k, R.backgrounds[k].n, c.background))}${opt('custom', 'Custom background', c.background)}</select></label>
           <label class="field"><span>Alignment</span><input type="text" id="b-align" data-bind="align" value="${c.align}" maxlength="30" placeholder="Neutral good" autocomplete="off"></label></div>
         ${c.background === 'custom' ? html`<div class="field"><span>Background skills (pick two)</span><div class="chips">${Object.keys(R.skills).map((sk) => html`<button type="button" class="chip" data-act="bg-sk" data-sk="${sk}" aria-pressed="${(c.bgSkills || []).includes(sk)}" ${!(c.bgSkills || []).includes(sk) && (c.bgSkills || []).length >= 2 ? 'disabled' : ''}>${R.skills[sk].n}</button>`)}</div></div>` : ''}
@@ -1100,7 +1137,7 @@ const UI = (() => {
       <div class="card"><div class="card-title"><h3>Skills</h3><span class="small muted">${picked.length} of ${choice.choose} chosen</span></div>
         <div class="chips">${skillChips}</div>
         ${granted.length ? html`<div class="label">From race and background</div><div class="chips">${granted}</div>` : ''}
-        ${expChips ? html`<div class="label">Expertise (${d.expertiseSlots})</div><div class="chips">${expChips.length ? expChips : html`<span class="hint">Choose skills first.</span>`}</div>` : ''}
+        ${expChips ? html`<div class="label">Expertise (${d.expertiseSlots})</div><div class="chips">${expChips.length ? expChips : html`<span class="hint">Choose skills first.</span>`}</div>` : c.cls === 'bard' ? html`<p class="hint">Expertise: pick 2 skills at level 3, 2 more at level 10.</p>` : c.cls === 'rogue' ? html`<p class="hint">Expertise: pick 2 skills at level 1, 2 more at level 6.</p>` : ''}
       </div>
       <div class="card"><div class="card-title"><h3>Armor and weapons</h3><span class="small muted">AC ${d.ac}</span></div>
         <div class="grid2"><label class="field"><span>Armor</span><select id="b-armor" data-field="armor">${opt('none', 'No armor', c.armor)}${armorGroups}</select></label>
@@ -1110,6 +1147,26 @@ const UI = (() => {
         <p class="hint">A dot after a weapon means this hero isn’t proficient with it.</p>
       </div>
       ${spellSec}
+      ${d.styleOptions.length ? html`<div class="card"><div class="card-title"><h3>Fighting style</h3><span class="small muted">${d.styleSlots ? `${(c.styles || []).filter((x) => d.styleOptions.includes(x)).length} of ${d.styleSlots}` : ''}</span></div>
+        ${d.styleSlots ? html`<div class="chips">${d.styleOptions.map((st) => {
+          const on = (c.styles || []).includes(st);
+          return html`<button type="button" class="chip" data-act="style" data-v="${st}" aria-pressed="${on}" ${on || (c.styles || []).filter((x) => d.styleOptions.includes(x)).length < d.styleSlots ? '' : 'disabled'}>${titleCase(st.replace(/-/g, ' '))}</button>`;
+        })}</div><p class="hint">Archery, Defense and Dueling change the sheet’s numbers; Great Weapon Fighting rerolls 1s and 2s on damage. The others show as text.</p>` : html`<p class="hint">Chosen at level 2.</p>`}</div>` : ''}
+      ${d.choices.length ? html`<div class="card"><div class="card-title"><h3>Choices from features and feats</h3></div>
+        ${d.choices.map((ch2) => {
+          const cur = (c.picks || {})[ch2.key] || [];
+          const full = cur.length >= ch2.n;
+          if (ch2.kind === 'skills') {
+            return html`<div class="field"><span>${ch2.label}: choose ${ch2.n} skill${ch2.n === 1 ? '' : 's'} (${cur.length} chosen)</span><div class="chips">${ch2.from.map((sk) => html`<button type="button" class="chip" data-act="pick" data-k="${ch2.key}" data-v="${sk}" data-n="${ch2.n}" aria-pressed="${cur.includes(sk)}" ${cur.includes(sk) || !full ? '' : 'disabled'}>${R.skills[sk].n}</button>`)}</div></div>`;
+          }
+          const top = ch2.maxLvl === 'slot' ? (d.cast ? d.cast.maxLvl : 1) : ch2.maxLvl;
+          const q = (H.pickQ || '').toLowerCase();
+          const pool = (D.spells || []).filter((sp) => sp.lvl <= top && (ch2.from === 'any' || sp.cls.includes(ch2.from)));
+          const shown = pool.filter((sp) => cur.includes(sp.i) || (!q || sp.n.toLowerCase().includes(q))).sort((a, b2) => cur.includes(b2.i) - cur.includes(a.i) || a.lvl - b2.lvl || a.n.localeCompare(b2.n)).slice(0, 40);
+          return html`<div class="field"><span>${ch2.label}: choose ${ch2.n} spell${ch2.n === 1 ? '' : 's'}, up to ${top ? ord(top) + ' level' : 'cantrips'}${ch2.from === 'any' ? ' from any class' : ''} (${cur.length} chosen)</span>
+            <div class="pick-list">${shown.map((sp) => html`<button type="button" class="pick" data-act="pick" data-k="${ch2.key}" data-v="${sp.i}" data-n="${ch2.n}" aria-pressed="${cur.includes(sp.i)}" ${cur.includes(sp.i) || !full ? '' : 'disabled'}><span class="box">${cur.includes(sp.i) ? '✓' : ''}</span><span class="nm">${sp.n}</span><span class="small muted">${sp.lvl ? ord(sp.lvl) : 'cantrip'}</span></button>`)}</div></div>`;
+        })}
+        ${d.choices.some((x) => x.kind === 'spells') ? html`<input type="search" id="pickQ" value="${H.pickQ || ''}" placeholder="Search spells for these choices" aria-label="Search spells">` : ''}</div>` : ''}
       <div class="card"><div class="card-title"><h3>Feats</h3><span class="small muted">${featIds.length} chosen</span></div>
         ${[...S.hb.values()].some((f) => (f.kind || 'feat') === 'feat') ? html`<div class="chips">${[...S.hb.values()].filter((f) => (f.kind || 'feat') === 'feat').sort((a, b) => String(a.name).localeCompare(String(b.name))).map((f) => {
           const on = featIds.includes(f.id);
@@ -1235,6 +1292,25 @@ const UI = (() => {
       case 'freefeat':
         c.freeFeats = Math.max(0, Math.min(4, (Number(c.freeFeats) || 0) + Number(b.dataset.d)));
         break;
+      case 'style': {
+        const dd = Core.derive(c, R, Store.featsFor(c));
+        const cur = (c.styles || []).filter((x) => dd.styleOptions.includes(x));
+        const v = b.dataset.v;
+        c.styles = cur.includes(v) ? cur.filter((x) => x !== v) : cur.length < dd.styleSlots ? cur.concat([v]) : cur;
+        break;
+      }
+      case 'pick': {
+        const k = b.dataset.k;
+        const n = Number(b.dataset.n) || 1;
+        const picks = Object.assign({}, c.picks || {});
+        const cur = (picks[k] || []).slice();
+        const i = cur.indexOf(b.dataset.v);
+        if (i >= 0) cur.splice(i, 1);
+        else if (cur.length < n) cur.push(b.dataset.v);
+        picks[k] = cur;
+        c.picks = picks;
+        break;
+      }
       case 'portrait-clear':
         c.portrait = '';
         break;
@@ -1272,6 +1348,11 @@ const UI = (() => {
     }
     if (t.id === 'spellQ') {
       H.spellQ = t.value;
+      refreshPick('heroes');
+      return;
+    }
+    if (t.id === 'pickQ') {
+      H.pickQ = t.value;
       refreshPick('heroes');
       return;
     }
@@ -1403,6 +1484,7 @@ const UI = (() => {
     delete c.id;
     const id = Store.Act.saveChar(H.editId, c);
     if (!H.editId) {
+      clearTimeout(draftT); // a draft save still waiting would bring this hero back as the next draft
       Store.LS.set(DRAFT_KEY, null);
       if (!S.myChar || !S.chars.has(S.myChar)) Store.setMyChar(id);
       toast(`${c.name} is ready. Place their token from the sheet.`);
@@ -1496,7 +1578,19 @@ const UI = (() => {
           const ex = spellDamageAt(sp, slot || 1, d.level, d.cast.mod);
           return rollExpr(who, sp.n + lvlTxt + (sp.dc ? ` · DC ${d.cast.dc} ${Core.ABIL_SHORT[sp.dc.ability]} save` : ''), ex, sp.dmg.type);
         }
-        if (a === 'sp-heal' && d) return rollExpr(who, sp.n + lvlTxt + ' · healing', spellHealAt(sp, slot || 1, d.cast.mod));
+        if (a === 'sp-heal' && d) {
+          let ex = spellHealAt(sp, slot || 1, (d.cast || { mod: 0 }).mod);
+          let note = '';
+          if (d.disciple && sp.lvl > 0) {
+            ex += '+' + (2 + (slot || sp.lvl));
+            note = ' · Disciple of Life';
+          }
+          if (d.supremeHealing) {
+            ex = String(Core.maxExpr(ex));
+            note += ' · Supreme Healing (max dice)';
+          }
+          return rollExpr(who, sp.n + lvlTxt + ' · healing' + note, ex);
+        }
         if (a === 'sp-area') {
           const tok = hero ? tokenForChar(hero.id) : null;
           const dm = d && sp.dmg ? spellDamageAt(sp, slot || sp.lvl || 1, d.level, d.cast ? d.cast.mod : 0) : null;
@@ -2773,11 +2867,15 @@ const UI = (() => {
     attack: 'Attack change (to hit, damage)', ability: 'Ability score increase', ac: 'Armor class bonus', speed: 'Speed bonus',
     init: 'Initiative bonus', hpPerLevel: 'Hit points per level', passive: 'Passive Perception bonus', save: 'Saving throw bonus',
     saveProf: 'Saving throw proficiency', skillProf: 'Skill proficiency', resource: 'Limited uses (tracker)', crit: 'Wider critical range',
+    spells: 'Spells (grant or choose)', skillChoice: 'Choose skill proficiencies', expertise: 'Extra Expertise picks', extraAttack: 'Extra Attack',
+    unarmored: 'Unarmored Defense', armorProf: 'Armor training', checkHalf: 'Half proficiency on ability checks',
   };
   const FX_DEFAULT = {
     attack: { when: 'toggle', filter: 'any', hit: 0, dmg: '' }, ability: { ab: 'str', n: 1 }, ac: { n: 1 }, speed: { n: 5 }, init: { n: 1 },
     hpPerLevel: { n: 1 }, passive: { n: 5 }, save: { ab: 'all', n: 1 }, saveProf: { ab: 'con' }, skillProf: { sk: 'perception' },
     resource: { name: '', max: 'pb', reset: 'long' }, crit: { min: 19 },
+    spells: { mode: 'choose', count: 2, from: 'any', maxLvl: '1', ab: '', free: false, list: [] }, skillChoice: { n: 2, from: [] }, expertise: { n: 2 },
+    extraAttack: { n: 1 }, unarmored: { ab: 'con' }, armorProf: { cat: 'Medium' }, checkHalf: { abs: ['str', 'dex', 'con'] },
   };
   const ROW_DEFAULT = {
     features: () => ({ lvl: '1', name: '', desc: '', effects: [] }),
@@ -2793,9 +2891,30 @@ const UI = (() => {
       case 'spell': return Object.assign(base, { lvl: '1', school: 'Evocation', cls: [], time: '1 action', range: '60 feet', comp: 'V, S', dur: 'Instantaneous', conc: false, ritual: false, atk: '', save: '', saveOn: 'half', dmg: '', dmgType: '', dmgUp: '', grow: true, heal: '', healUp: '', area: '', areaSize: '20', areaWidth: '5', areaSelf: false, higher: '' });
       case 'monster': return Object.assign(base, { size: 'Medium', type: 'monstrosity', align: 'unaligned', ac: '12', acn: '', hp: '11', hd: '2d8+2', speed: '30 ft.', abil: ['10', '10', '10', '10', '10', '10'], cr: '1', saves: {}, senses: 'passive Perception 10', lang: '—', vul: '', res: '', imm: '', cimm: '', traits: [], actions: [], legend: [], react: [] });
       case 'subclass': return Object.assign(base, { cls: 'fighter', features: [] });
-      case 'class': return Object.assign(base, { hd: '8', saves: ['str', 'con'], armor: ['Light'], weapons: 'simple', skillsChoose: '2', skills: [], cast: 'none', castAb: 'int', spellList: 'wizard', cantrips: '0', subLevel: '3', subName: 'Path', features: [] });
+      case 'class': return Object.assign(base, { hd: '8', saves: ['str', 'con'], armor: ['Light'], weapons: 'simple', skillsChoose: '2', skills: [], cast: 'none', castAb: 'int', spellList: 'wizard', cantrips: '0', subLevel: '3', subLevels: '3, 7, 10, 15, 18', subName: 'Path', features: [] });
       default: return Object.assign(base, { effects: [] });
     }
+  }
+  // Optional starting points for classes: the usual shape of each kind of class.
+  const CLASS_FRAMEWORKS = {
+    martial: { label: 'Martial (weapons and armor)', hd: '10', saves: ['str', 'con'], armor: ['Light', 'Medium', 'Heavy', 'Shield'], weapons: 'martial', skillsChoose: '2', cast: 'none', subLevel: '3', subLevels: '3, 7, 10, 15, 18', rows: [[1, 'Combat training'], [2, 'Level 2 feature'], [5, 'Extra Attack', [{ t: 'extraAttack', n: 1 }]], [9, 'Level 9 feature'], [11, 'Improved Extra Attack', [{ t: 'extraAttack', n: 2 }]], [13, 'Level 13 feature'], [17, 'Level 17 feature'], [20, 'Capstone']] },
+    expert: { label: 'Expert (skills and cunning)', hd: '8', saves: ['dex', 'int'], armor: ['Light'], weapons: 'simple', skillsChoose: '4', cast: 'none', subLevel: '3', subLevels: '3, 9, 13, 17', rows: [[1, 'Expertise', [{ t: 'expertise', n: 2 }]], [2, 'Level 2 feature'], [5, 'Level 5 feature'], [6, 'More Expertise', [{ t: 'expertise', n: 2 }]], [7, 'Level 7 feature'], [11, 'Level 11 feature'], [15, 'Level 15 feature'], [20, 'Capstone']] },
+    half: { label: 'Half caster (warrior with spells)', hd: '10', saves: ['wis', 'cha'], armor: ['Light', 'Medium', 'Heavy', 'Shield'], weapons: 'martial', skillsChoose: '2', cast: 'half', castAb: 'cha', subLevel: '3', subLevels: '3, 7, 15, 20', rows: [[1, 'Level 1 feature'], [2, 'Fighting technique'], [5, 'Extra Attack', [{ t: 'extraAttack', n: 1 }]], [6, 'Level 6 feature'], [10, 'Level 10 feature'], [14, 'Level 14 feature'], [18, 'Level 18 feature']] },
+    full: { label: 'Full caster (scholar of magic)', hd: '6', saves: ['int', 'wis'], armor: [], weapons: 'simple', skillsChoose: '2', cast: 'full', castAb: 'int', cantrips: '3', subLevel: '2', subLevels: '2, 6, 10, 14', rows: [[1, 'Level 1 feature'], [18, 'Level 18 feature'], [20, 'Capstone']] },
+    pact: { label: 'Pact caster (bargain for power)', hd: '8', saves: ['wis', 'cha'], armor: ['Light'], weapons: 'simple', skillsChoose: '2', cast: 'pact', castAb: 'cha', cantrips: '2', subLevel: '1', subLevels: '1, 6, 10, 14', rows: [[2, 'Level 2 feature'], [3, 'Level 3 feature'], [11, 'Level 11 feature'], [20, 'Capstone']] },
+    divine: { label: 'Divine caster (faith and healing)', hd: '8', saves: ['wis', 'cha'], armor: ['Light', 'Medium', 'Shield'], weapons: 'simple', skillsChoose: '2', cast: 'full', castAb: 'wis', cantrips: '3', subLevel: '1', subLevels: '1, 2, 6, 8, 17', rows: [[2, 'Level 2 feature'], [5, 'Level 5 feature'], [10, 'Level 10 feature']] },
+  };
+  // the levels a class's subclasses usually get features at
+  function subclassLevels(clsId) {
+    const R = D.rules;
+    const C = R && R.classes[clsId];
+    if (!C) return [];
+    if (C.hb) {
+      const f = S.hb.get(clsId.slice(3));
+      return String((f && f.subLevels) || C.subStart || 3).split(/[,\s]+/).map(Number).filter((n) => n >= 1 && n <= 20);
+    }
+    const sub = C.subs.find((x) => !x.hb) || C.subs[0];
+    return sub ? Object.keys(sub.levels).map(Number).concat([sub.start]).filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b) : [];
   }
   const canEditHb = (f) => !S.readOnly && (S.dm || !f || f.by === S.me.pk);
   const kindName = (k) => (HB_KINDS.find((x) => x[0] === k) || HB_KINDS[0])[2];
@@ -2864,6 +2983,26 @@ const UI = (() => {
       case 'resource':
         return html`<div class="grid3">${fText(p('name'), 'Name', 'Uses', 40)}${fSel(p('max'), 'How many', [['pb', 'Proficiency bonus'], ...Core.ABILS.map((a) => [a, Core.ABIL_SHORT[a] + ' modifier']), ...[1, 2, 3, 4, 5].map((n) => [String(n), String(n)])])}${fSel(p('reset'), 'Comes back after', [['long', 'Long rest'], ['short', 'Short rest']])}</div>`;
       case 'crit': return fSel(p('min'), 'Critical hit on', [['19', '19–20'], ['18', '18–20']]);
+      case 'spells': {
+        const lists = [['any', 'Any class’s list'], ...Object.keys(R.classes).filter((k) => R.classes[k].cast).map((k) => [k, R.classes[k].n + ' list'])];
+        const common = html`<div class="grid2">${fSel(p('ab'), 'Cast with', [['', 'The hero’s spellcasting ability'], ...abOpts()])}<div class="field"><span>Free casting</span><div class="chips">${fTog(p('free'), 'Each once per long rest without a slot')}</div></div></div>`;
+        if (e.mode === 'fixed') {
+          const chosen = Array.isArray(e.list) ? e.list : [];
+          const q = (HB.spq || '').toLowerCase();
+          const pool = (D.spells || []).filter((sp) => !chosen.includes(sp.i) && q && sp.n.toLowerCase().includes(q)).slice(0, 24);
+          return html`${fSel(p('mode'), 'How', [['choose', 'The player chooses'], ['fixed', 'These exact spells, always prepared']])}
+            <div class="field"><span>Spells (${chosen.length})</span><div class="chips">${chosen.map((id) => html`<button type="button" class="chip" data-act="hb-chip" data-path="${p('list')}" data-v="${id}" aria-pressed="true">${(D.spellsById && D.spellsById.get(id) || { n: id }).n} ✕</button>`)}</div></div>
+            <input type="search" id="hb-spq" value="${HB.spq || ''}" placeholder="Search spells to add" aria-label="Search spells to add">
+            ${pool.length ? html`<div class="chips">${pool.map((sp) => html`<button type="button" class="chip" data-act="hb-chip" data-path="${p('list')}" data-v="${sp.i}" aria-pressed="false">+ ${sp.n} <span class="muted">${sp.lvl ? ord(sp.lvl) : 'cantrip'}</span></button>`)}</div>` : ''}${common}`;
+        }
+        return html`${fSel(p('mode'), 'How', [['choose', 'The player chooses'], ['fixed', 'These exact spells, always prepared']])}
+          <div class="grid3">${fNum(p('count'), 'How many')}${fSel(p('maxLvl'), 'Up to level', [['slot', 'Highest slot level'], ['0', 'Cantrips only'], ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [String(n), ord(n)])])}${fSel(p('from'), 'From', lists)}</div>${common}`;
+      }
+      case 'skillChoice': return html`${fNum(p('n'), 'How many skills')}${fChips(p('from'), 'Only from these (none picked = any skill)', Object.keys(R.skills).map((k) => [k, R.skills[k].n]))}`;
+      case 'expertise': case 'extraAttack': return fNum(p('n'), e.t === 'extraAttack' ? 'Extra attacks' : 'Extra picks');
+      case 'unarmored': return fSel(p('ab'), 'AC is 10 + Dex +', [['dex', 'nothing else'], ...abOpts().filter(([a]) => a !== 'dex')]);
+      case 'armorProf': return fSel(p('cat'), 'Training with', [['Light', 'Light armor'], ['Medium', 'Medium armor'], ['Heavy', 'Heavy armor'], ['Shield', 'Shields']]);
+      case 'checkHalf': return fChips(p('abs'), 'On checks with', abOpts());
     }
     return '';
   }
@@ -2922,17 +3061,29 @@ const UI = (() => {
           ${rowsEditor('legend', 'Legendary actions', 'Legendary action', nameDesc)}
           ${rowsEditor('react', 'Reactions', 'Reaction', nameDesc)}`;
       case 'subclass':
-        return html`${head}<div class="card">${fSel('cls', 'For the class', classOpts().filter(([k]) => k !== 'hb-' + HB.id))}
-          <p class="hint">Heroes of that class can pick it in the hero builder at the class’s usual subclass level.</p></div>
-          ${rowsEditor('features', 'Features', 'Feature', featureRow)}`;
+        {
+          const lv = subclassLevels(f.cls);
+          const have = new Set((f.features || []).map((x) => Number(x.lvl)));
+          const missing = lv.filter((n) => !have.has(n));
+          return html`${head}<div class="card">${fSel('cls', 'For the class', classOpts().filter(([k]) => k !== 'hb-' + HB.id))}
+            <p class="hint">Heroes of that class can pick it in the hero builder at the class’s usual subclass level.</p>
+            ${lv.length ? html`<div class="framework"><b>Framework (optional):</b> ${D.rules.classes[f.cls] ? D.rules.classes[f.cls].n : 'This class'} subclasses usually get features at levels ${lv.join(', ')}.
+              ${missing.length ? html`<button type="button" class="btn btn-sm" data-act="hb-frame-sub">${icon('plus')} Add empty features at ${missing.join(', ')}</button>` : html`<span class="small muted"> Every usual level has a feature.</span>`}</div>` : ''}</div>
+            ${rowsEditor('features', 'Features', 'Feature', featureRow)}`;
+        }
       case 'class':
-        return html`${head}<div class="card"><div class="grid3">${fSel('hd', 'Hit die', [['6', 'd6'], ['8', 'd8'], ['10', 'd10'], ['12', 'd12']])}${fSel('saves.0', 'Saving throw 1', abOpts())}${fSel('saves.1', 'Saving throw 2', abOpts())}</div>
+        return html`${head}<div class="card framework"><b>Start from a framework (optional)</b><p class="hint" style="margin:4px 0 8px">Fills in the usual hit die, saves, training, spellcasting, subclass levels and key features for that kind of class. You can change everything afterwards.</p>
+          <div class="chips">${Object.keys(CLASS_FRAMEWORKS).map((k) => html`<button type="button" class="chip" data-act="hb-frame-class" data-k="${k}">${CLASS_FRAMEWORKS[k].label}</button>`)}</div></div>
+          <div class="card"><div class="grid3">${fSel('hd', 'Hit die', [['6', 'd6'], ['8', 'd8'], ['10', 'd10'], ['12', 'd12']])}${fSel('saves.0', 'Saving throw 1', abOpts())}${fSel('saves.1', 'Saving throw 2', abOpts())}</div>
           ${fChips('armor', 'Armor training', [['Light', 'Light'], ['Medium', 'Medium'], ['Heavy', 'Heavy'], ['Shield', 'Shields']])}
           <div class="grid2">${fSel('weapons', 'Weapons', [['simple', 'Simple weapons'], ['martial', 'Simple and martial'], ['none', 'None']])}${fNum('skillsChoose', 'Skills to choose')}</div>
           ${fChips('skills', 'Skills to choose from', Object.keys(R.skills).map((k) => [k, R.skills[k].n]))}</div>
           <div class="card"><div class="card-title"><h3>Spellcasting</h3></div><div class="grid3">${fSel('cast', 'Spellcaster', [['none', 'None'], ['full', 'Full (like a wizard)'], ['half', 'Half (like a paladin)'], ['third', 'One-third'], ['pact', 'Pact (like a warlock)']])}${fSel('castAb', 'Ability', abOpts())}${fNum('cantrips', 'Cantrips known')}</div>
           ${fSel('spellList', 'Spell list', [...Object.keys(R.classes).filter((k) => !/^hb-/.test(k) && R.classes[k].cast).map((k) => [k, R.classes[k].n + ' spells']), ['own', 'Only spells tagged with this class']])}</div>
-          <div class="card"><div class="card-title"><h3>Subclass</h3></div><div class="grid2">${fNum('subLevel', 'Chosen at level')}${fText('subName', 'Called', 'Path, Oath, Circle…', 40)}</div><p class="hint">Make subclasses for it in the Subclasses tab.</p></div>
+          <div class="card"><div class="card-title"><h3>Subclass</h3></div><div class="grid3">${fNum('subLevel', 'Chosen at level')}${fText('subName', 'Called', 'Path, Oath, Circle…', 40)}${fText('subLevels', 'Subclass features at levels', '3, 7, 10, 15, 18', 60)}</div>
+            <p class="hint">Heroes choose their ${f.subName || 'subclass'} in the hero builder at level ${f.subLevel || 3}. The feature levels give new subclasses for this class their framework.</p>
+            ${HB.id ? html`<div class="list">${[...S.hb.values()].filter((x) => x.kind === 'subclass' && x.cls === 'hb-' + HB.id).map((x) => html`<div class="row"><span class="main"><span class="title">${x.name}</span></span><button type="button" class="btn btn-sm" data-act="hb-edit" data-id="${x.id}">${icon('edit')} Edit</button></div>`)}</div>
+              <button type="button" class="btn btn-sm" data-act="hb-new-sub">${icon('plus')} New ${f.subName || 'subclass'} for this class</button>` : html`<p class="hint">Save the class first, then you can add its subclasses here.</p>`}</div>
           ${rowsEditor('features', 'Class features', 'Feature', featureRow)}
           <p class="hint">Proficiency bonus, Ability Score Improvements (levels 4, 8, 12, 16, 19) and spell slots follow the standard tables.</p>`;
       default:
@@ -2985,12 +3136,41 @@ const UI = (() => {
         HB.view = 'list';
         HB.draft = null;
         break;
+      case 'hb-frame-sub': {
+        if (!f) return;
+        const have = new Set((f.features || []).map((x) => Number(x.lvl)));
+        subclassLevels(f.cls).filter((n) => !have.has(n)).forEach((n) => f.features.push({ lvl: String(n), name: '', desc: '', effects: [] }));
+        f.features.sort((x, y) => Number(x.lvl) - Number(y.lvl));
+        break;
+      }
+      case 'hb-frame-class': {
+        const fw = CLASS_FRAMEWORKS[b.dataset.k];
+        if (!f || !fw) return;
+        ['hd', 'saves', 'armor', 'weapons', 'skillsChoose', 'cast', 'castAb', 'cantrips', 'subLevel', 'subLevels'].forEach((k) => fw[k] !== undefined && (f[k] = Store.clone(fw[k])));
+        const have = new Set((f.features || []).map((x) => Number(x.lvl) + '|' + x.name));
+        fw.rows.forEach(([lvl, name, effects]) => {
+          if (!have.has(lvl + '|' + name)) f.features.push({ lvl: String(lvl), name, desc: '', effects: Store.clone(effects || []) });
+        });
+        f.features.sort((x, y) => Number(x.lvl) - Number(y.lvl));
+        toast('Framework filled in. Rename the features and describe them in your own words.');
+        break;
+      }
+      case 'hb-new-sub': {
+        if (!HB.id) return;
+        HB.kind = 'subclass';
+        const clsId = 'hb-' + HB.id;
+        HB.id = null;
+        HB.draft = hbDefault('subclass');
+        HB.draft.cls = clsId;
+        subclassLevels(clsId).forEach((n) => HB.draft.features.push({ lvl: String(n), name: '', desc: '', effects: [] }));
+        break;
+      }
       case 'hb-tog':
         if (f) setPath(f, path, !getPath(f, path));
         break;
       case 'hb-chip': {
         if (!f) return;
-        const cur = (getPath(f, path) || []).slice();
+        const cur = (Array.isArray(getPath(f, path)) ? getPath(f, path) : []).slice();
         const i = cur.indexOf(b.dataset.v);
         if (i >= 0) cur.splice(i, 1);
         else cur.push(b.dataset.v);
@@ -3061,6 +3241,14 @@ const UI = (() => {
   }
   // typing updates the draft only; summaries and dependent fields refresh when a field is left (change)
   function hbInput(t) {
+    if (t.id === 'hb-spq') {
+      HB.spq = t.value;
+      panels.homebrew.typing = false;
+      const keep = panels.homebrew.el.scrollTop;
+      renderPanel('homebrew', true);
+      panels.homebrew.el.scrollTop = keep;
+      return;
+    }
     if (HB.draft && t.dataset.path) setPath(HB.draft, t.dataset.path, t.value);
   }
   function hbChange(t) {

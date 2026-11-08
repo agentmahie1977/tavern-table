@@ -533,3 +533,4 @@ button.stat:hover { border-color: var(--brass); }
 .inv-row .title { white-space: normal; overflow-wrap: anywhere; }
 .linkish { background: none; border: 0; padding: 0; color: var(--brass-hi); font: inherit; font-weight: 700; cursor: pointer; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
 .fx-box { display: grid; gap: 8px; }
+.framework { border-left: 3px solid var(--brass); padding-left: 12px; }

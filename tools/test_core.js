@@ -200,4 +200,43 @@ const hm = Core.monsterFromHomebrew({ id: 'm1', name: 'Test Lurker', size: 'Larg
   actions: [{ n: 'Claw', d: 'Rake.', hit: 5, dmg: '2d6+3', dmgType: 'slashing' }, { n: 'Spit', save: 'dex', dc: 12, saveOn: 'half', dmg: '3d6', dmgType: 'acid', area: 'line', areaSize: 30 }, { d: 'no name' }] });
 eq(hm.cr, 0.5); eq(hm.xp, 100); eq(hm.pb, 2); eq(hm.saves, { con: 4 }); eq(hm.actions.length, 2); eq(hm.actions[0].dmg, [['2d6+3', 'Slashing']]); eq(hm.actions[1].dc, ['dex', 12, 'half']); eq(hm.actions[1].area.shape, 'line');
 eq(Core.encounter([3, 3, 3, 3], [{ xp: hm.xp, count: 4 }]).label, 'Medium');
+
+// ---- SRD class mechanics the testers reported
+const rageBarb = { cls: 'barbarian', level: 9, race: 'human', base: { str: 16, dex: 14, con: 15, int: 8, wis: 12, cha: 10 }, weapons: ['greataxe', 'longbow'] };
+d = Core.derive(rageBarb, R);
+eq(d.toggles.map((t) => t.feat), ['Rage', 'Reckless Attack']);
+let gaxe = (d) => d.attacks.find((a) => a.id === 'greataxe');
+const gaxe0 = gaxe(d);
+eq(gaxe0.brutal, '1d12', 'brutal critical: one extra weapon die at 9');
+d = Core.derive(Object.assign({}, rageBarb, { fx: { 'b-rage_0': 1, 'b-reckless_0': 1 } }), R);
+eq(gaxe(d).dmg, gaxe0.dmg + '+3', 'rage damage +3 at level 9'); eq(gaxe(d).adv, true, 'reckless: advantage');
+eq(d.attacks.find((a) => a.id === 'longbow').dmg, Core.derive(rageBarb, R).attacks.find((a) => a.id === 'longbow').dmg, 'rage is melee only');
+const champFtr = { cls: 'fighter', subclass: 'champion', level: 10, race: 'human', base: { str: 16, dex: 14, con: 14, int: 10, wis: 12, cha: 8 }, weapons: ['longsword', 'longbow'], styles: ['archery', 'dueling', 'defense'], armor: 'chain-mail' };
+d = Core.derive(champFtr, R);
+eq(d.critMin, 19, 'improved critical'); eq(d.styleSlots, 2, 'champion 10: second style'); eq(d.styles, ['archery', 'dueling'], 'only as many styles as slots');
+eq(d.attacks.find((a) => a.id === 'longbow').hit, 2 + 4 + 2, 'archery +2 (dex 15 = +2)'); eq(d.attacks.find((a) => a.id === 'longsword').dmg, '1d8+3+2', 'dueling +2');
+eq(d.skills.athletics.bonus, 3 + 2, 'athletics not proficient here: half PB'); eq(d.skills.acrobatics.bonus, 2 + 2, 'remarkable athlete: half PB rounded up'); eq(d.skills.arcana.bonus, 0, 'int checks unaffected'); eq(d.init, 2 + 2);
+eq(Core.derive(Object.assign({}, champFtr, { level: 15 }), R).critMin, 18, 'superior critical');
+eq(Core.derive(Object.assign({}, champFtr, { styles: ['defense'] }), R).ac, 16 + 1, 'defense +1 in armor');
+eq(Core.derive(Object.assign({}, champFtr, { weapons: ['greatsword'], styles: ['great-weapon-fighting'] }), R).attacks[0].gwf, true);
+eq(Core.derive({ cls: 'paladin', level: 1, styles: ['defense'] }, R).styleSlots, 0, 'paladin style at 2');
+const loreBard = { cls: 'bard', subclass: 'lore', level: 10, race: 'human', base: { str: 8, dex: 14, con: 12, int: 10, wis: 12, cha: 16 }, skills: ['persuasion'], picks: {} };
+d = Core.derive(loreBard, R);
+eq(d.expertiseSlots, 4); eq(d.songOfRest, 'd8');
+eq(d.choices.map((x) => [x.label, x.kind, x.n]), [['College of Lore', 'skills', 3], ['Magical Secrets', 'spells', 2], ['College of Lore', 'spells', 2]]);
+const loreKey = d.choices[0].key, msKey = d.choices[1].key;
+d = Core.derive(Object.assign({}, loreBard, { picks: { [loreKey]: ['arcana', 'history', 'nature', 'religion'], [msKey]: ['fireball', 'counterspell', 'extra'] } }), R);
+eq(d.skills.arcana.prof, true); eq(d.skills.religion.prof, false, 'only 3 lore skills'); eq(d.granted.map((g) => g.id), ['fireball', 'counterspell']);
+const lifeCler = { cls: 'cleric', subclass: 'life', level: 8, race: 'human', base: { str: 12, dex: 10, con: 14, int: 10, wis: 16, cha: 10 }, weapons: ['mace'] };
+d = Core.derive(lifeCler, R);
+eq(d.granted.filter((g) => g.always).map((g) => g.id), ['bless', 'cure-wounds', 'lesser-restoration', 'spiritual-weapon', 'beacon-of-hope', 'revivify', 'death-ward', 'guardian-of-faith']);
+eq(d.armorTraining, ['Heavy']); eq(d.disciple, true); eq(d.actions.map((a) => a.n), ['Turn Undead', 'Preserve Life']); ok(/DC 14/.test(d.actions[0].text)); ok(/40 HP/.test(d.actions[1].text));
+eq(d.toggles.map((t) => t.feat), ['Divine Strike']);
+d = Core.derive(Object.assign({}, lifeCler, { level: 10, fx: { 'b-divine-strike_0': 1 } }), R);
+eq(d.attacks.find((a) => a.id === 'mace').extra, [['1d8', 'radiant']]); eq(d.actions.map((a) => a.n), ['Turn Undead', 'Divine Intervention', 'Preserve Life']);
+// homebrew uses of the new effects
+const hbf = { id: 'n1', name: 'Test Adept', effects: [{ t: 'spells', mode: 'choose', count: 2, from: 'wizard', maxLvl: 1, ab: 'int', free: true }, { t: 'extraAttack', n: 1 }, { t: 'unarmored', ab: 'wis' }, { t: 'expertise', n: 1 }] };
+d = Core.derive(Object.assign({}, archer, { picks: { n1_0: ['magic-missile', 'shield'] } }), R, [hbf]);
+eq(d.granted.map((g) => [g.id, g.ab, g.free]), [['magic-missile', 'int', true], ['shield', 'int', true]]); eq(d.extraAttacks, 1); eq(d.ac, 10 + 3 + 1, 'unarmored with wis');
+Core._setRng((sides) => 1); eq(Core.roll('2d6', { reroll: 2 }).t, 2, 'reroll keeps the second roll'); Core._setRng(null);
 console.log('core tests passed:', n);

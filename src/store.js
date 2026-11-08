@@ -122,6 +122,8 @@ const Store = (() => {
     return CAMP_RE.test(l) ? l : 'main';
   }
   const campSuffix = (cid) => (cid === 'main' ? '' : ':' + cid);
+  // Homebrew belongs to the whole game, not one campaign: it always lives with the main campaign.
+  const isGlobalPath = (p) => p === 'homebrew' || String(p).startsWith('homebrew/');
 
   /* ------------------------------------------- in-memory doc mirror */
   // Documents plus collection/doc watchers; shared by the solo and self-hosted backends
@@ -280,6 +282,32 @@ const Store = (() => {
       },
     };
   }
+
+  function splitBackend(own, shared) {
+    // homebrew a campaign kept before homebrew became game-wide moves to the shared place
+    Object.keys(own.all()).filter(isGlobalPath).forEach((p) => {
+      if (!shared.peek(p)) shared.set(p, own.peek(p));
+      own.del(p);
+    });
+    const pick = (p) => (isGlobalPath(p) ? shared : own);
+    return {
+      kind: 'local',
+      all() {
+        const o = own.all();
+        const sh = shared.all();
+        for (const p in sh) if (isGlobalPath(p)) o[p] = sh[p];
+        return o;
+      },
+      peek: (p) => pick(p).peek(p),
+      watchCol: (col, opts, cb, onErr) => pick(col).watchCol(col, opts, cb, onErr),
+      watchDoc: (p, cb, onErr) => pick(p).watchDoc(p, cb, onErr),
+      set: (p, d) => pick(p).set(p, d),
+      upd: (p, d) => pick(p).upd(p, d),
+      del: (p) => pick(p).del(p),
+      get: (p) => pick(p).get(p),
+    };
+  }
+  const campBackend = (cid) => (!cid || cid === 'main' ? localBackend('main') : splitBackend(localBackend(cid), localBackend('main')));
 
   /* ------------------------------------ self-hosted server (server.js) */
   // One computer runs tools/server.js; everyone opens its address. Live updates
@@ -704,7 +732,7 @@ const Store = (() => {
   /* ------------------------------------------------- db-backed backend */
   function remoteBackend(db, cid) {
     // other campaigns live under camp/<id>/… in the same shared database
-    const P = (p) => (!cid || cid === 'main' ? p : 'camp/' + cid + '/' + p);
+    const P = (p) => (!cid || cid === 'main' || isGlobalPath(p) ? p : 'camp/' + cid + '/' + p);
     const wrap = (snapDocs) => snapDocs.filter((d) => d.exists !== false).map((d) => ({ id: d.id, raw: d.data() }));
     return {
       kind: 'remote',
@@ -1577,12 +1605,12 @@ const Store = (() => {
       } else {
         S.p2p = null;
         S.mode = 'local';
-        S.backend = localBackend(S.camp);
+        S.backend = campBackend(S.camp);
         S.room = localRoom();
       }
     } else if (!cl && !opts.forceLocal && LS.get('tt.hosting', false)) {
       // this browser hosts the table online: its saved table is the one everyone plays on
-      const hub = makeHub(localBackend(S.camp));
+      const hub = makeHub(campBackend(S.camp));
       const conn = loopbackConn(hub);
       S.mode = 'remote';
       S.backend = serverBackend(conn);
@@ -1608,7 +1636,7 @@ const Store = (() => {
       S.room = room;
     } else {
       S.mode = 'local';
-      S.backend = localBackend(S.camp);
+      S.backend = campBackend(S.camp);
       S.room = localRoom();
     }
     let pk = me && me.id;
@@ -1644,6 +1672,19 @@ const Store = (() => {
     wireRoom();
     emit('me');
     if (S.dm) setTimeout(() => Act.pruneLog(), 8000);
+    if (S.mode === 'remote' && Store.db && S.camp !== 'main' && !S.server && !S.p2p) setTimeout(migrateCampaignHomebrew, 3000);
+  }
+
+  async function migrateCampaignHomebrew() {
+    if (S.canWrite !== true) return;
+    try {
+      const snap = await Store.db.collection('camp/' + S.camp + '/homebrew').get();
+      for (const d of snap.docs) {
+        if (d.exists === false) continue;
+        if (!S.hb.has(d.id)) await Store.db.doc('homebrew/' + d.id).set(d.data());
+        await Store.db.doc('camp/' + S.camp + '/homebrew/' + d.id).delete();
+      }
+    } catch (e) { /* try again next time */ }
   }
 
   /* --------------------------------------------- derived hero stats */

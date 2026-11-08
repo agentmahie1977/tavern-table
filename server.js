@@ -60,6 +60,8 @@ function deepMerge(a, b) {
   return out;
 }
 const isChunk = (p) => p.startsWith('mapchunks/');
+// homebrew belongs to the whole game: it lives in the main table and every campaign sees it
+const isGlobal = (p) => p.startsWith('homebrew/');
 
 // One table per campaign: the default campaign ("main") lives in DATA_DIR itself,
 // others in DATA_DIR/campaigns/<id>/. The list of campaigns is DATA_DIR/campaigns.json.
@@ -91,6 +93,20 @@ function table(cid) {
     }
   }
   tables.set(cid, t);
+  if (cid !== 'main') {
+    // homebrew this campaign kept from before homebrew became game-wide moves to the main table
+    const main = table('main');
+    let moved = 0;
+    [...t.docs.keys()].filter(isGlobal).forEach((p) => {
+      if (!main.docs.has(p)) main.docs.set(p, t.docs.get(p));
+      t.docs.delete(p);
+      moved++;
+    });
+    if (moved) {
+      save(t);
+      save(main);
+    }
+  }
   return t;
 }
 table('main');
@@ -110,6 +126,7 @@ function save(t) {
 }
 const chunkFile = (t, p) => path.join(t.chunkDir, p.slice('mapchunks/'.length) + '.json');
 function getDoc(t, p) {
+  if (isGlobal(p)) t = table('main');
   if (!isChunk(p)) return t.docs.has(p) ? t.docs.get(p) : null;
   try {
     return JSON.parse(fs.readFileSync(chunkFile(t, p), 'utf8'));
@@ -121,6 +138,7 @@ function getDoc(t, p) {
 function applyWrite(t, op) {
   const p = op && op.p;
   if (typeof p !== 'string' || !PATH_RE.test(p)) return 'invalid_argument';
+  if (isGlobal(p) && t.cid !== 'main') t = table('main');
   if (op.t === 'del') {
     if (isChunk(p)) fs.rm(chunkFile(t, p), { force: true }, () => {});
     else {
@@ -156,7 +174,9 @@ function send(res, event, data) {
 }
 function broadcast(t, event, data) {
   const msg = 'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n';
-  t.clients.forEach((c) => c.res.write(msg));
+  // a homebrew change reaches everyone, whatever campaign they're in
+  const to = event === 'doc' && data && isGlobal(data.p) ? [...tables.values()] : [t];
+  to.forEach((x) => x.clients.forEach((c) => c.res.write(msg)));
 }
 function peersSoon(t) {
   if (t.peersTimer) return;
@@ -257,7 +277,9 @@ const server = http.createServer(async (req, res) => {
       const peer = 'p' + crypto.randomBytes(8).toString('hex');
       t.clients.set(peer, { res, presence: {}, t: Date.now(), owner: isLocal(req) });
       send(res, 'hello', { peer, owner: isLocal(req) });
-      send(res, 'snap', { docs: Object.fromEntries(t.docs) });
+      const snap = Object.fromEntries([...t.docs].filter(([p]) => !isGlobal(p)));
+      table('main').docs.forEach((d, p) => isGlobal(p) && (snap[p] = d));
+      send(res, 'snap', { docs: snap });
       peersSoon(t);
       req.on('close', () => {
         t.clients.delete(peer);

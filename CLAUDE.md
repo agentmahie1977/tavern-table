@@ -62,6 +62,11 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
   / `homebrewClass` convert them to SRD shapes; `mergeHomebrew()` in store.js builds `Data.rules`, `spells`,
   `monsters`, `features` from `Data.srd` + homebrew. `featsFor(ch)` = feats + equipped (and attuned) items +
   homebrew class/subclass features up to the hero's level; their effects go through `Core.derive`.
+- Homebrew is game-wide: `isGlobalPath()` keeps `homebrew/*` out of campaign prefixes (claude.ai), in
+  the main storage (`splitBackend` for solo/host) and in the main server table (`isGlobal` in server.js).
+- SRD class mechanics live in `Core.builtinSources` / `classActions` as the same effect sources homebrew
+  uses (Rage, Reckless Attack, Champion, Magical Secrets, Lore, Life domain, fighting styles via `c.styles`).
+  Choices a feature or feat asks for are `d.choices`; the player's picks are `c.picks[effectKey]`.
 - Inventories: hero `ch.inv` [{id, n, q, note, hb, eq, at}] and `ch.coins`; party items `party/*`,
   party coins `game/state.coins`.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,
