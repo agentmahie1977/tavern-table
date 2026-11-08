@@ -545,6 +545,7 @@ button.stat:hover { border-color: var(--brass); }
 .act-tabs button { font-size: 12.5px; padding: 7px 6px; }
 .act-row .linkish { font-size: 15px; }
 .use-box { display: grid; gap: 6px; border-left: 3px solid var(--arcane); padding-left: 10px; }
+.world canvas.fog-layer { position: absolute; left: 0; top: 0; pointer-events: none; }
 
 </style>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -3724,7 +3725,10 @@ const Board = (() => {
   'use strict';
   const S = Store.S;
   let root, world, mapImg, blank, svg, gGrid, gTpl, gFx, tokLayer, fxLayer, ghost, distTag;
-  let rail, initStrip, bottom, msg, zoomTag, fab;
+  let rail, initStrip, bottom, msg, zoomTag, fab, fogCanvas;
+  let fog = null; // current fog state for this scene (null when fog is off)
+  let fogSaveT = 0;
+  let wallDraft = null;
   const V = { z: 1, tx: 0, ty: 0 };
   let scene = null;
   let sceneId = null;
@@ -3782,6 +3786,7 @@ const Board = (() => {
         <img class="mapimg" alt="" hidden draggable="false">
         <svg class="layer-grid" xmlns="http://www.w3.org/2000/svg"><path class="grid-path" fill="none"/></svg>
         <svg class="layer-tpl" xmlns="http://www.w3.org/2000/svg"><g class="tpls"></g></svg>
+        <canvas class="fog-layer" aria-hidden="true"></canvas>
         <div class="tokens"></div>
         <svg class="layer-fx" xmlns="http://www.w3.org/2000/svg"><g class="fx"></g></svg>
         <div class="fxdom"><div class="ghost" hidden></div><div class="dist-tag" hidden></div></div>
@@ -3800,6 +3805,7 @@ const Board = (() => {
     gTpl = root.querySelector('.tpls');
     gFx = root.querySelector('.fx');
     tokLayer = root.querySelector('.tokens');
+    fogCanvas = root.querySelector('.fog-layer');
     fxLayer = root.querySelector('.fxdom');
     ghost = root.querySelector('.ghost');
     distTag = root.querySelector('.dist-tag');
@@ -3928,6 +3934,7 @@ const Board = (() => {
       blank.style.height = H + 'px';
     }
     renderGrid();
+    fog = null;
     if (!fitted) fit();
     renderAll();
   }
@@ -4006,10 +4013,73 @@ const Board = (() => {
   }
 
   /* -------------------------------------------------------- tokens */
+  /* ---------------------------------------------------- fog of war */
+  // walls are [x1,y1,x2,y2] in map pixels on the scene; fog settings in scene.fog
+  const sceneWalls = () => (Array.isArray(scene && scene.walls) ? scene.walls : []).filter((w) => Array.isArray(w) && w.length === 4 && w.every((v) => Number.isFinite(Number(v)))).map((w) => w.map(Number));
+  const fogOn = () => !!(scene && !scene.virtual && scene.fog && scene.fog.enabled) || !!(scene && scene.virtual && scene.fog && scene.fog.enabled);
+  function updateFog() {
+    if (!fogOn()) {
+      fog = null;
+      drawFog();
+      return;
+    }
+    const f = scene.fog || {};
+    const pcs = [];
+    S.tokens.forEach((t) => t.scene === sceneId && t.kind === 'pc' && pcs.push(t));
+    const prevExplored = fog && fog.sceneId === sceneId ? fog.explored : {};
+    const st = Core.createFogState({ explored: Object.assign({}, f.explored || {}, prevExplored), ManualReveal: f.reveal || {}, ManualHide: f.hide || {} });
+    Core.stepFog(st, pcs, grid, sceneWalls(), { rule: diagRule(), defaultVisionFt: Number(f.vision) > 0 ? Number(f.vision) : 60 });
+    st.sceneId = sceneId;
+    fog = st;
+    // the DM's device keeps the explored area with the scene
+    if (S.dm && !S.readOnly) {
+      const saved = f.explored || {};
+      const add = {};
+      Object.keys(st.explored).forEach((k) => !saved[k] && (add[k] = 1));
+      if (Object.keys(add).length) {
+        clearTimeout(fogSaveT);
+        const id = sceneId;
+        fogSaveT = setTimeout(() => Store.Act.patchScene(id, { fog: { explored: add } }), 800);
+      }
+    }
+    drawFog();
+  }
+  function drawFog() {
+    if (!fogCanvas) return;
+    if (!fog) {
+      fogCanvas.hidden = true;
+      return;
+    }
+    fogCanvas.hidden = false;
+    if (fogCanvas.width !== Math.round(W) || fogCanvas.height !== Math.round(H)) {
+      fogCanvas.width = Math.round(W);
+      fogCanvas.height = Math.round(H);
+    }
+    fogCanvas.style.width = W + 'px';
+    fogCanvas.style.height = H + 'px';
+    const cx = fogCanvas.getContext('2d');
+    cx.clearRect(0, 0, W, H);
+    const g = grid.size;
+    const c0 = Math.floor(-grid.ox / g) - 1;
+    const r0 = Math.floor(-grid.oy / g) - 1;
+    const c1 = Math.ceil((W - grid.ox) / g);
+    const r1 = Math.ceil((H - grid.oy) / g);
+    // players: black where unexplored, dim where explored; the DM: a light shade where players can't see
+    const unseen = S.dm ? 'rgba(10,14,20,0.35)' : 'rgb(8,10,12)';
+    const remembered = S.dm ? 'rgba(10,14,20,0.18)' : 'rgba(8,10,12,0.6)';
+    for (let c = c0; c <= c1; c++) {
+      for (let r = r0; r <= r1; r++) {
+        const k = c + ',' + r;
+        if (fog.visible[k]) continue;
+        cx.fillStyle = fog.explored[k] ? remembered : unseen;
+        cx.fillRect(grid.ox + c * g - 0.5, grid.oy + r * g - 0.5, g + 1, g + 1);
+      }
+    }
+  }
   function sceneTokens() {
     const out = [];
     S.tokens.forEach((t) => {
-      if (t.scene === sceneId && (!t.hidden || S.dm)) out.push(t);
+      if (t.scene === sceneId && (!t.hidden || S.dm) && (S.dm || t.kind === 'pc' || ownsToken(t) || Core.tokenVisibleToPlayers(t, fog))) out.push(t);
     });
     return out;
   }
@@ -4056,6 +4126,7 @@ const Board = (() => {
   }
   function renderTokens() {
     if (!tokLayer) return;
+    updateFog();
     const list = sceneTokens();
     const seen = new Set();
     const turn = turnTokenId();
@@ -4422,6 +4493,11 @@ const Board = (() => {
       const ft = Core.distanceFt(ru.b[0] - ru.a[0], ru.b[1] - ru.a[1], rule);
       html += rulerSvg(ru.a, ru.b, safeColor(p.presence.col) || '#d9a647', ft + ' ft');
     });
+    if (S.dm && (fogOn() || tool === 'walls')) {
+      const w = Math.max(2, 3 / V.z);
+      sceneWalls().forEach(([x1, y1, x2, y2]) => (html += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#93bbff" stroke-width="${w}" stroke-linecap="round"/>`));
+      if (wallDraft) html += `<line x1="${wallDraft[0]}" y1="${wallDraft[1]}" x2="${wallDraft[2]}" y2="${wallDraft[3]}" stroke="#f3cf78" stroke-width="${w}" stroke-dasharray="${w * 3} ${w * 2}" stroke-linecap="round"/>`;
+    }
     gFx.innerHTML = html;
   }
   function onPing(p) {
@@ -4509,6 +4585,13 @@ const Board = (() => {
       aimPointer(wx, wy, true);
       return;
     }
+    if (tool === 'walls' && S.dm) {
+      G.mode = 'wall';
+      const [sx, sy] = snapPoint(wx, wy);
+      wallDraft = [sx, sy, sx, sy];
+      renderFx();
+      return;
+    }
     if (tool === 'measure') {
       clearTimeout(rulerTimer);
       G.mode = 'ruler';
@@ -4572,6 +4655,12 @@ const Board = (() => {
         V.ty = G.vy + dy;
         applyView();
         break;
+      case 'wall': {
+        const [ex, ey] = snapPoint(wx, wy);
+        wallDraft = [wallDraft[0], wallDraft[1], ex, ey];
+        renderFx();
+        break;
+      }
       case 'ruler': {
         const c = cellOf(wx, wy);
         if (c[0] !== myRuler.b[0] || c[1] !== myRuler.b[1]) {
@@ -4610,6 +4699,25 @@ const Board = (() => {
       if (window.UI) UI.openTemplateSheet(G.tpl);
     } else if (mode === 'press-empty') {
       if (sel) selectTok(null);
+    } else if (mode === 'wall') {
+      const walls = sceneWalls();
+      const [x1, y1, x2, y2] = wallDraft;
+      if (Math.hypot(x2 - x1, y2 - y1) < 2) {
+        // a tap removes the nearest wall under it
+        const [px, py] = toWorld(e.clientX, e.clientY);
+        const near = 10 / V.z;
+        const i = walls.findIndex(([a, b, c, d]) => {
+          const L = (c - a) ** 2 + (d - b) ** 2 || 1;
+          const t = Math.max(0, Math.min(1, ((px - a) * (c - a) + (py - b) * (d - b)) / L));
+          return Math.hypot(px - (a + t * (c - a)), py - (b + t * (d - b))) < near;
+        });
+        if (i >= 0) {
+          walls.splice(i, 1);
+          Store.Act.patchScene(sceneId, { walls });
+        }
+      } else if (walls.length < 600) Store.Act.patchScene(sceneId, { walls: walls.concat([[x1, y1, x2, y2].map((v) => Math.round(v * 10) / 10)]) });
+      wallDraft = null;
+      renderFx();
     } else if (mode === 'ruler') {
       rulerTimer = setTimeout(() => {
         myRuler = null;
@@ -4810,7 +4918,7 @@ const Board = (() => {
     const r = (t, ic, label) => `<button type="button" data-act="tool" data-tool="${t}" aria-pressed="${tool === t}" aria-label="${label}" title="${label}">${icon(ic)}</button>`;
     rail.innerHTML = r('select', 'move', 'Move and select') + r('measure', 'ruler', 'Measure distance') +
       `<button type="button" data-act="tool" data-tool="template" aria-pressed="${!!aim}" aria-label="Spell area" title="Spell area">${icon('area')}</button>` +
-      r('ping', 'ping', 'Ping a spot') + '<div class="rsep"></div>' +
+      r('ping', 'ping', 'Ping a spot') + (S.dm ? r('walls', 'edit', 'Draw walls (for fog of war): drag to draw, tap a wall to remove it') : '') + '<div class="rsep"></div>' +
       `<button type="button" data-act="fit" aria-label="Fit map to screen" title="Fit map to screen">${icon('fit')}</button>` +
       (S.dm ? `<button type="button" data-act="scenes" aria-label="Scenes and maps" title="Scenes and maps">${icon('map')}</button>` : '');
     renderInitStrip();
@@ -6855,6 +6963,7 @@ const UI = (() => {
         const info = Board.tokInfo(tok);
         const isPc = tok.kind === 'pc';
         return html`${!isPc ? html`<label class="field"><span>Name</span><input type="text" id="tkName" value="${tok.name || ''}" maxlength="40"></label>` : html`<p class="hint">${info.name}’s name and color come from their hero sheet.</p>`}
+          <label class="field"><span>Sees (ft, for fog of war; empty = scene default)</span><input type="number" id="tkVision" value="${tok.vision != null ? tok.vision : ''}" min="0" max="1000" step="5" inputmode="numeric"></label>
           <div class="field"><span>Size</span><div class="seg">${[[0.5, 'Tiny'], [1, 'Small/Med'], [2, 'Large'], [3, 'Huge'], [4, 'Garg.']].map(([s, l]) => html`<button type="button" data-act="size" data-s="${s}" aria-pressed="${Number(tok.size || 1) === s}">${l}</button>`)}</div></div>
           ${!isPc ? html`<div class="grid2"><label class="field"><span>Max HP</span><input type="number" id="tkMax" value="${tok.max || ''}" min="0" max="9999" inputmode="numeric"></label><label class="field"><span>AC</span><input type="number" id="tkAc" value="${tok.ac || ''}" min="0" max="40" inputmode="numeric"></label></div>
           <div class="field"><span>Color</span><div class="swatches">${['#e2654f', ...Store.PALETTE].map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="color" data-c="${col}" aria-pressed="${tok.color === col}" aria-label="Color ${col}"></button>`)}</div></div>` : ''}
@@ -6888,6 +6997,7 @@ const UI = (() => {
           const mx = Math.max(0, Math.floor(Number(tg.value) || 0));
           Store.Act.patchToken(tok.id, { max: mx, hp: Math.min(tok.hp == null ? mx : tok.hp, mx) });
         }
+        if (tg.id === 'tkVision') Store.Act.patchToken(tok.id, { vision: tg.value === '' ? null : Math.max(0, Math.min(1000, Number(tg.value) || 0)) });
         if (tg.id === 'tkAc') Store.Act.patchToken(tok.id, { ac: Math.max(0, Math.floor(Number(tg.value) || 0)) });
       },
     });
@@ -7609,6 +7719,10 @@ const UI = (() => {
               : html`<div class="grid2"><label class="field"><span>Columns</span><input type="number" id="gCols" value="${act.cols || 30}" min="4" max="120" inputmode="numeric"></label><label class="field"><span>Rows</span><input type="number" id="gRows" value="${act.rows || 20}" min="4" max="120" inputmode="numeric"></label></div>`}
             <div class="grid2"><div class="field"><span>Line color</span><div class="seg"><button type="button" data-act="gcol" data-c="#000000" aria-pressed="${gr.color === '#000000'}">Dark</button><button type="button" data-act="gcol" data-c="#e9e2cf" aria-pressed="${gr.color !== '#000000'}">Light</button></div></div>
               <label class="field"><span>Line strength</span><input type="range" id="gAlpha" min="0.05" max="0.9" step="0.05" value="${gr.alpha}"></label></div>
+            <div class="field"><span>Fog of war</span><div class="btn-row"><button type="button" class="chip" data-act="fog" aria-pressed="${!!(act.fog && act.fog.enabled)}">${act.fog && act.fog.enabled ? 'Fog on' : 'Fog off'}</button>
+              <label class="field" style="width:130px"><span>Heroes see (ft)</span><input type="number" id="fogVision" value="${(act.fog && act.fog.vision) || 60}" min="5" max="1000" step="5" inputmode="numeric"></label>
+              <button type="button" class="btn btn-ghost btn-sm" data-act="fog-reset">Reset explored area</button></div>
+              <p class="hint">Players see only what their heroes can see; walls block sight. Draw walls with the wall tool on the map (drag; tap a wall to remove it). Set a token’s own vision in its More options.</p></div>
             <div class="field"><span>Diagonal movement</span><div class="seg"><button type="button" data-act="diag" data-d="5" aria-pressed="${(S.game.diag || '5') === '5'}">Every square 5 ft</button><button type="button" data-act="diag" data-d="5-10" aria-pressed="${S.game.diag === '5-10'}">5-10-5</button></div></div>
           </div>`;
       },
@@ -7630,6 +7744,15 @@ const UI = (() => {
         }
         if (a === 'gshow') return Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, { show: !gr.show }) });
         if (a === 'gcol') return Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, { color: b.dataset.c, alpha: b.dataset.c === '#000000' ? 0.3 : 0.18 }) });
+        if (a === 'fog') return Store.Act.patchScene(act.id, { fog: { enabled: !(act.fog && act.fog.enabled) } });
+        if (a === 'fog-reset') {
+          const doc = Object.assign({}, act);
+          delete doc.id;
+          delete doc.virtual;
+          doc.fog = Object.assign({}, act.fog || {}, { explored: {} });
+          if (S.scenes.has(act.id)) Store.W.set('scenes/' + act.id, doc);
+          return toast('Explored area reset.');
+        }
         if (a === 'diag') return Store.Act.setGame({ diag: b.dataset.d });
       },
       input(t) {
@@ -7653,6 +7776,7 @@ const UI = (() => {
           Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, patch) });
         };
         if (t.id === 'mapFile' && t.files && t.files[0]) return doUpload(t.files[0]);
+        if (t.id === 'fogVision') return Store.Act.patchScene(act.id, { fog: { vision: Math.max(5, Math.min(1000, Number(t.value) || 60)) } });
         if (t.id === 'scName') return Store.Act.patchScene(act.id, { name: String(t.value).trim().slice(0, 60) || act.name });
         if (t.id === 'gAcross') {
           const n = Number(t.value);

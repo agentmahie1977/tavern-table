@@ -1917,6 +1917,7 @@ const UI = (() => {
         const info = Board.tokInfo(tok);
         const isPc = tok.kind === 'pc';
         return html`${!isPc ? html`<label class="field"><span>Name</span><input type="text" id="tkName" value="${tok.name || ''}" maxlength="40"></label>` : html`<p class="hint">${info.name}’s name and color come from their hero sheet.</p>`}
+          <label class="field"><span>Sees (ft, for fog of war; empty = scene default)</span><input type="number" id="tkVision" value="${tok.vision != null ? tok.vision : ''}" min="0" max="1000" step="5" inputmode="numeric"></label>
           <div class="field"><span>Size</span><div class="seg">${[[0.5, 'Tiny'], [1, 'Small/Med'], [2, 'Large'], [3, 'Huge'], [4, 'Garg.']].map(([s, l]) => html`<button type="button" data-act="size" data-s="${s}" aria-pressed="${Number(tok.size || 1) === s}">${l}</button>`)}</div></div>
           ${!isPc ? html`<div class="grid2"><label class="field"><span>Max HP</span><input type="number" id="tkMax" value="${tok.max || ''}" min="0" max="9999" inputmode="numeric"></label><label class="field"><span>AC</span><input type="number" id="tkAc" value="${tok.ac || ''}" min="0" max="40" inputmode="numeric"></label></div>
           <div class="field"><span>Color</span><div class="swatches">${['#e2654f', ...Store.PALETTE].map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="color" data-c="${col}" aria-pressed="${tok.color === col}" aria-label="Color ${col}"></button>`)}</div></div>` : ''}
@@ -1950,6 +1951,7 @@ const UI = (() => {
           const mx = Math.max(0, Math.floor(Number(tg.value) || 0));
           Store.Act.patchToken(tok.id, { max: mx, hp: Math.min(tok.hp == null ? mx : tok.hp, mx) });
         }
+        if (tg.id === 'tkVision') Store.Act.patchToken(tok.id, { vision: tg.value === '' ? null : Math.max(0, Math.min(1000, Number(tg.value) || 0)) });
         if (tg.id === 'tkAc') Store.Act.patchToken(tok.id, { ac: Math.max(0, Math.floor(Number(tg.value) || 0)) });
       },
     });
@@ -2671,6 +2673,10 @@ const UI = (() => {
               : html`<div class="grid2"><label class="field"><span>Columns</span><input type="number" id="gCols" value="${act.cols || 30}" min="4" max="120" inputmode="numeric"></label><label class="field"><span>Rows</span><input type="number" id="gRows" value="${act.rows || 20}" min="4" max="120" inputmode="numeric"></label></div>`}
             <div class="grid2"><div class="field"><span>Line color</span><div class="seg"><button type="button" data-act="gcol" data-c="#000000" aria-pressed="${gr.color === '#000000'}">Dark</button><button type="button" data-act="gcol" data-c="#e9e2cf" aria-pressed="${gr.color !== '#000000'}">Light</button></div></div>
               <label class="field"><span>Line strength</span><input type="range" id="gAlpha" min="0.05" max="0.9" step="0.05" value="${gr.alpha}"></label></div>
+            <div class="field"><span>Fog of war</span><div class="btn-row"><button type="button" class="chip" data-act="fog" aria-pressed="${!!(act.fog && act.fog.enabled)}">${act.fog && act.fog.enabled ? 'Fog on' : 'Fog off'}</button>
+              <label class="field" style="width:130px"><span>Heroes see (ft)</span><input type="number" id="fogVision" value="${(act.fog && act.fog.vision) || 60}" min="5" max="1000" step="5" inputmode="numeric"></label>
+              <button type="button" class="btn btn-ghost btn-sm" data-act="fog-reset">Reset explored area</button></div>
+              <p class="hint">Players see only what their heroes can see; walls block sight. Draw walls with the wall tool on the map (drag; tap a wall to remove it). Set a token’s own vision in its More options.</p></div>
             <div class="field"><span>Diagonal movement</span><div class="seg"><button type="button" data-act="diag" data-d="5" aria-pressed="${(S.game.diag || '5') === '5'}">Every square 5 ft</button><button type="button" data-act="diag" data-d="5-10" aria-pressed="${S.game.diag === '5-10'}">5-10-5</button></div></div>
           </div>`;
       },
@@ -2692,6 +2698,15 @@ const UI = (() => {
         }
         if (a === 'gshow') return Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, { show: !gr.show }) });
         if (a === 'gcol') return Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, { color: b.dataset.c, alpha: b.dataset.c === '#000000' ? 0.3 : 0.18 }) });
+        if (a === 'fog') return Store.Act.patchScene(act.id, { fog: { enabled: !(act.fog && act.fog.enabled) } });
+        if (a === 'fog-reset') {
+          const doc = Object.assign({}, act);
+          delete doc.id;
+          delete doc.virtual;
+          doc.fog = Object.assign({}, act.fog || {}, { explored: {} });
+          if (S.scenes.has(act.id)) Store.W.set('scenes/' + act.id, doc);
+          return toast('Explored area reset.');
+        }
         if (a === 'diag') return Store.Act.setGame({ diag: b.dataset.d });
       },
       input(t) {
@@ -2715,6 +2730,7 @@ const UI = (() => {
           Store.Act.patchScene(act.id, { grid: Object.assign({}, gr, patch) });
         };
         if (t.id === 'mapFile' && t.files && t.files[0]) return doUpload(t.files[0]);
+        if (t.id === 'fogVision') return Store.Act.patchScene(act.id, { fog: { vision: Math.max(5, Math.min(1000, Number(t.value) || 60)) } });
         if (t.id === 'scName') return Store.Act.patchScene(act.id, { name: String(t.value).trim().slice(0, 60) || act.name });
         if (t.id === 'gAcross') {
           const n = Number(t.value);
