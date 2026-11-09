@@ -143,7 +143,14 @@ const Board = (() => {
       renderTokens();
       renderHud();
     });
-    Store.on('peers', onPeers);
+    let peersRaf = 0;
+    Store.on('peers', () => {
+      if (peersRaf) return;
+      peersRaf = requestAnimationFrame(() => {
+        peersRaf = 0;
+        onPeers();
+      });
+    });
     Store.on('ping', onPing);
     Store.on('relay', renderHud);
     applyScene();
@@ -307,10 +314,15 @@ const Board = (() => {
     const f = scene.fog || {};
     const pcs = [];
     S.tokens.forEach((t) => t.scene === sceneId && t.kind === 'pc' && pcs.push(t));
+    // nothing that fog depends on changed (heroes' squares, vision, walls, settings): keep the last result
+    const key = [S.dm ? 1 : 0, grid.size, grid.ox, grid.oy, W, H, diagRule(), pcs.map((t) => [t.id, t.c, t.r, t.size, t.vision].join(':')).join('|')].join(';');
+    if (fog && fog.sceneRef === scene && fog.key === key) return;
     const prevExplored = fog && fog.sceneId === sceneId ? fog.explored : {};
     const st = Core.createFogState({ explored: Object.assign({}, f.explored || {}, prevExplored), ManualReveal: f.reveal || {}, ManualHide: f.hide || {} });
     Core.stepFog(st, pcs, grid, sceneWalls(), { rule: diagRule(), defaultVisionFt: Number(f.vision) > 0 ? Number(f.vision) : 60 });
     st.sceneId = sceneId;
+    st.sceneRef = scene;
+    st.key = key;
     fog = st;
     // the DM's device keeps the explored area with the scene
     if (S.dm && !S.readOnly) {

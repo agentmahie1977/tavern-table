@@ -1101,6 +1101,19 @@ const Core = (() => {
     if (t < 0 || t > maxDist) return null;
     return { x: ox + dx * t, y: oy + dy * t, t };
   }
+  // Walls that can block sight within radiusPx of (ox,oy); farther walls can't change anything
+  function wallsNear(ox, oy, radiusPx, walls) {
+    if (!Array.isArray(walls) || !walls.length) return [];
+    return walls.filter((sg) => {
+      const x1 = Array.isArray(sg) ? sg[0] : sg.x1;
+      const y1 = Array.isArray(sg) ? sg[1] : sg.y1;
+      const x2 = Array.isArray(sg) ? sg[2] : sg.x2;
+      const y2 = Array.isArray(sg) ? sg[3] : sg.y2;
+      const L = (x2 - x1) ** 2 + (y2 - y1) ** 2 || 1;
+      const t = Math.max(0, Math.min(1, ((ox - x1) * (x2 - x1) + (oy - y1) * (y2 - y1)) / L));
+      return Math.hypot(ox - (x1 + t * (x2 - x1)), oy - (y1 + t * (y2 - y1))) <= radiusPx;
+    });
+  }
   // Line-of-sight polygon [[x,y], ...] around (ox,oy), clipped by walls
   function visibilityPolygon(ox, oy, radiusPx, walls, perimeterSteps) {
     const steps = perimeterSteps || 72;
@@ -1140,10 +1153,22 @@ const Core = (() => {
       }
       poly.push([bx, by]);
     }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    poly.forEach(([x, y]) => {
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    });
+    poly.bbox = [x0, y0, x1, y1];
     return poly;
   }
   // Point in polygon (even-odd rule)
   function inPolygon(poly, px, py) {
+    if (poly.bbox) {
+      const b = poly.bbox;
+      if (px < b[0] || px > b[2] || py < b[1] || py > b[3]) return false;
+    }
     let inside = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
       const [xi, yi] = poly[i];
@@ -1166,7 +1191,9 @@ const Core = (() => {
       if (!tok) return;
       const ft = Math.max(0, Number(tok.vision != null ? tok.vision : defaultFt));
       const [cx, cy] = tokenCenter(tok, grid);
-      const poly = walls && walls.length ? visibilityPolygon(cx, cy, visionRadiusPx(tok, grid, defaultFt), walls) : null;
+      const rad = visionRadiusPx(tok, grid, defaultFt);
+      const near = wallsNear(cx, cy, rad, walls);
+      const poly = near.length ? visibilityPolygon(cx, cy, rad, near) : null;
       const tCells = tokenCells(tok); // once per token, not once per cell
       const maxCells = Math.ceil(ft / 5) + Math.max(1, Math.round(tok.size || 1));
       const baseC = Math.floor((cx - ox) / g);
@@ -1200,7 +1227,7 @@ const Core = (() => {
     list.forEach((tok) => {
       const [cx, cy] = tokenCenter(tok, grid);
       const r = visionRadiusPx(tok, grid, defaultFt);
-      const poly = visibilityPolygon(cx, cy, r, walls);
+      const poly = visibilityPolygon(cx, cy, r, wallsNear(cx, cy, r, walls));
       st.polygons.push({ id: tok.id || null, cx, cy, r, poly });
       // breadcrumb when this token (not just any token) has moved 4px or its vision changed
       let prev = null;
@@ -1241,7 +1268,7 @@ const Core = (() => {
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
     EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
     STYLES, LIFE_SPELLS, SRD_USE, optionCount, expandOptions, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
-    tokenCenter, visionRadiusPx, raySegmentHit, visibilityPolygon, inPolygon, visibleCells, createFogState, stepFog, tokenVisibleToPlayers,
+    tokenCenter, visionRadiusPx, wallsNear, raySegmentHit, visibilityPolygon, inPolygon, visibleCells, createFogState, stepFog, tokenVisibleToPlayers,
     _setRng: (f) => { rng = f; },
   };
 })();
