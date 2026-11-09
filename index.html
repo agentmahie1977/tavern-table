@@ -4861,6 +4861,11 @@ const Board = (() => {
         if (t === 'ping' && tool === 'ping' && UIx) UIx.toast('Tap the map to ping. Long-press works with any tool.');
         break;
       }
+      case 'fog-toggle':
+        if (!S.dm || !scene) break;
+        Store.Act.patchScene(scene.id, { fog: { enabled: !fogOn() } });
+        if (UIx) UIx.toast(fogOn() ? 'Fog of war off.' : 'Fog of war on. Players see only what their heroes can see. Draw walls with the pencil tool.');
+        break;
       case 'fit':
         fit();
         break;
@@ -4918,7 +4923,7 @@ const Board = (() => {
     const r = (t, ic, label) => `<button type="button" data-act="tool" data-tool="${t}" aria-pressed="${tool === t}" aria-label="${label}" title="${label}">${icon(ic)}</button>`;
     rail.innerHTML = r('select', 'move', 'Move and select') + r('measure', 'ruler', 'Measure distance') +
       `<button type="button" data-act="tool" data-tool="template" aria-pressed="${!!aim}" aria-label="Spell area" title="Spell area">${icon('area')}</button>` +
-      r('ping', 'ping', 'Ping a spot') + (S.dm ? r('walls', 'edit', 'Draw walls (for fog of war): drag to draw, tap a wall to remove it') : '') + '<div class="rsep"></div>' +
+      r('ping', 'ping', 'Ping a spot') + (S.dm ? `<button type="button" data-act="fog-toggle" aria-pressed="${fogOn()}" aria-label="Fog of war ${fogOn() ? 'on' : 'off'}" title="Fog of war: ${fogOn() ? 'on' : 'off'}">${icon('eye-off')}</button>` + r('walls', 'edit', 'Draw walls (for fog of war): drag to draw, tap a wall to remove it') : '') + '<div class="rsep"></div>' +
       `<button type="button" data-act="fit" aria-label="Fit map to screen" title="Fit map to screen">${icon('fit')}</button>` +
       (S.dm ? `<button type="button" data-act="scenes" aria-label="Scenes and maps" title="Scenes and maps">${icon('map')}</button>` : '');
     renderInitStrip();
