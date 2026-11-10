@@ -45,6 +45,12 @@ function buildPage() {
     body + '</body></html>';
 }
 const PAGE = buildPage();
+// compressed once at start: the page and rules data are about four times smaller on the wire
+const zlib = require('zlib');
+const PAGE_GZ = zlib.gzipSync(PAGE);
+const PAGE_TAG = '"' + crypto.createHash('sha1').update(PAGE).digest('hex').slice(0, 16) + '"';
+const dataGz = new Map();
+const wantsGzip = (req) => /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
 const DATA_FILES = new Set(['rules', 'spells', 'monsters', 'features']);
 
 /* ---------------------------------------------------------- documents */
@@ -230,12 +236,27 @@ const server = http.createServer(async (req, res) => {
   const route = url.pathname;
   try {
     if (req.method === 'GET' && (route === '/' || route === '/index.html')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      const head = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache', etag: PAGE_TAG, vary: 'accept-encoding' };
+      if (req.headers['if-none-match'] === PAGE_TAG) {
+        res.writeHead(304, head);
+        return res.end();
+      }
+      if (wantsGzip(req)) {
+        res.writeHead(200, Object.assign(head, { 'content-encoding': 'gzip' }));
+        return res.end(PAGE_GZ);
+      }
+      res.writeHead(200, head);
       return res.end(PAGE);
     }
     const dm = /^\/data\/([a-z]+)\.json$/.exec(route);
     if (req.method === 'GET' && dm && DATA_FILES.has(dm[1])) {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'max-age=3600' });
+      const head = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'max-age=3600', vary: 'accept-encoding' };
+      if (wantsGzip(req)) {
+        if (!dataGz.has(dm[1])) dataGz.set(dm[1], zlib.gzipSync(fs.readFileSync(path.join(ROOT, 'data', dm[1] + '.json'))));
+        res.writeHead(200, Object.assign(head, { 'content-encoding': 'gzip' }));
+        return res.end(dataGz.get(dm[1]));
+      }
+      res.writeHead(200, head);
       return fs.createReadStream(path.join(ROOT, 'data', dm[1] + '.json')).pipe(res);
     }
     if (route === '/api/hello') return json(res, authorized(url) ? 200 : 401, { tavern: 1, locked: !!PASSWORD });

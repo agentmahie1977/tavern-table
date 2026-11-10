@@ -327,6 +327,7 @@ const Store = (() => {
       }
     };
     if (!/^https?:$/.test(location.protocol)) return null;
+    if (/\.github\.io$/.test(location.hostname)) return null; // GitHub Pages can't run the table server: skip the check
     let key = LS.get('tt.key', '') || '';
     let r = await get('?key=' + encodeURIComponent(key));
     if (!r) return null;

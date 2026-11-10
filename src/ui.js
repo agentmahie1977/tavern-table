@@ -17,8 +17,15 @@ const UI = (() => {
     for (let i = 0; i < vals.length; i++) out += val(vals[i]) + strings[i + 1];
     return raw(out);
   }
+  // only touches the page when the markup really changed (tabs and the people dots are redrawn very often)
   const setHTML = (el, h) => {
-    el.innerHTML = typeof h === 'string' ? h : val(h);
+    const str = typeof h === 'string' ? h : val(h);
+    if (el._html === str) return;
+    el._html = str;
+    el.innerHTML = str;
+  };
+  const setText = (el, t) => {
+    if (el && el.textContent !== t) el.textContent = t;
   };
   const icon = (id) => raw(`<svg class="ic" aria-hidden="true"><use href="#i-${id}"/></svg>`);
   const initials = Board.initials;
@@ -338,13 +345,14 @@ const UI = (() => {
   /* ------------------------------------------------------- top bar */
   function renderTop() {
     const sc = Store.activeScene();
-    $('#sceneName').textContent = sc.name || 'Blank grid';
-    const bn = document.querySelector('.brand-name');
-    if (bn) bn.textContent = Store.campaignName();
+    setText($('#sceneName'), sc.name || 'Blank grid');
+    setText(document.querySelector('.brand-name'), Store.campaignName());
     const conn = $('#conn');
     const hostDown = S.p2p && S.p2p.role === 'host' && S.p2p.status !== 'online';
-    conn.className = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline && !hostDown ? 'live' : '');
-    conn.title = S.mode === 'local' ? 'Solo mode: this device only' : S.offline ? 'Reconnecting…' : S.loaded ? 'Live' : 'Connecting…';
+    const connCls = 'conn ' + (S.mode === 'local' ? 'solo' : S.loaded && !S.offline && !hostDown ? 'live' : '');
+    if (conn.className !== connCls) conn.className = connCls;
+    const connTitle = S.mode === 'local' ? 'Solo mode: this device only' : S.offline ? 'Reconnecting…' : S.loaded ? 'Live' : 'Connecting…';
+    if (conn.title !== connTitle) conn.title = connTitle;
     const pill = $('#statusPill');
     let st = '';
     if (S.mode === 'local') st = 'Solo · this device';
@@ -353,8 +361,8 @@ const UI = (() => {
     else if (S.readOnly) st = 'View only';
     else if (S.stale && !S.loaded) st = 'Can’t reach the table';
     else if (S.relay) st = 'Limited access';
-    pill.hidden = !st;
-    pill.textContent = st;
+    if (pill.hidden !== !st) pill.hidden = !st;
+    setText(pill, st);
     const peers = [];
     const seen = new Set();
     S.peers.forEach((p) => {
@@ -2703,7 +2711,7 @@ const UI = (() => {
           const doc = Object.assign({}, act);
           delete doc.id;
           delete doc.virtual;
-          doc.fog = Object.assign({}, act.fog || {}, { explored: {} });
+          doc.fog = Object.assign({}, act.fog || {}, { explored: {}, epoch: Date.now() });
           if (S.scenes.has(act.id)) Store.W.set('scenes/' + act.id, doc);
           return toast('Explored area reset.');
         }
