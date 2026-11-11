@@ -128,6 +128,7 @@ const Board = (() => {
       renderTemplates();
       renderHud();
     });
+    Store.on('art', renderTokens);
     Store.on('chars', () => {
       renderTokens();
       renderHud();
@@ -438,7 +439,7 @@ const Board = (() => {
     }
     const mon = t.mon && Store.Data.monstersById ? Store.Data.monstersById.get(t.mon) : null;
     return {
-      name: t.name || (mon && mon.n) || 'Token', color: safeColor(t.color) || (t.kind === 'monster' ? '#e2654f' : '#c9b48a'), img: null,
+      name: t.name || (mon && mon.n) || 'Token', color: safeColor(t.color) || (t.kind === 'monster' ? '#e2654f' : '#c9b48a'), img: safeImg(Store.monImg(t.mon)),
       hp: t.hp, max: t.max, ac: t.ac, conds: t.conds || [], showHp: S.dm || t.kind !== 'monster', mon,
     };
   }

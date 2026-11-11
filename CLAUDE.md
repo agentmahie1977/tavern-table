@@ -71,6 +71,14 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
   `SRD_USE` (SRD features), SRD option lists (`srdOptionSources`: Metamagic, invocations, pact boon, Hunter,
   dragon ancestor, Land), class actions, and homebrew feats/items/features/options with `act`/`costRes`/`costN`.
   "Choose from options" is the `options` effect (`expandOptions`); costs resolve to trackers by name.
+- Accounts (`accounts/*`, global): name + salted, stretched SHA-256 PIN hash (pure JS, works on plain-http
+  LAN servers). `LS tt.acct` = account id = `S.me.pk`; the first account on a device reuses the device's pk so
+  its heroes move in. Account keeps name, color, dm, playing[campaign]. Automated browsers (navigator.webdriver)
+  skip the sign-in prompt unless the address has `?acct`.
+- Backup/restore: `Store.backup()`/`restore()` cover every campaign (server `api/backup`/`api/restore`,
+  claude.ai db reads, or this device's localStorage + IndexedDB). Homebrew export/import never overwrites.
+- Monster pictures: `art/<monsterId>` (global) or a homebrew monster's `img`; `Store.monImg()`.
+- Trackers: `reset` short/long/dawn/never/none + `regain` (number or dice); `Core.restRecovery()`.
 - Inventories: hero `ch.inv` [{id, n, q, note, hb, eq, at}] and `ch.coins`; party items `party/*`,
   party coins `game/state.coins`.
 - Shared document paths: `game/state`, `scenes/*`, `tokens/*`, `templates/*`, `chars/*`,

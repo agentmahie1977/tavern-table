@@ -53,6 +53,37 @@ const UI = (() => {
     return r >= 1 ? 'Unhurt' : r > 0.5 ? 'Hurt' : 'Bloodied';
   }
 
+  /* ------------------------------------------------------ file helpers */
+  // claude.ai pages save through the downloads capability; elsewhere a normal download link
+  async function saveFile(filename, text) {
+    try {
+      const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+      if (dl) {
+        await dl.save({ filename, data: new Blob([text], { type: 'application/json' }) });
+        return;
+      }
+    } catch (e) { /* fall back to a link */ }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1000);
+  }
+  function pickFile(accept) {
+    return new Promise((res) => {
+      const i = document.createElement('input');
+      i.type = 'file';
+      i.accept = accept;
+      i.onchange = () => res(i.files && i.files[0]);
+      i.click();
+    });
+  }
+  const stamp = () => new Date().toISOString().slice(0, 10);
+
   /* ---------------------------------------------------------- toasts */
   function toast(text, kind, opts) {
     const box = $('#toasts');
@@ -1742,7 +1773,7 @@ const UI = (() => {
     Sheet.open({
       title: m.n,
       wide: true,
-      live: ['tokens'],
+      live: ['tokens', 'art'],
       render() {
         const t = tokId && S.tokens.get(tokId);
         const who = t ? t.name : m.n;
@@ -1759,7 +1790,7 @@ const UI = (() => {
           ${t ? html`<div class="card"><div class="card-title"><h3>${t.name}</h3><span class="badge ${t.hp <= 0 ? 'red' : ''}">${healthWord(t.hp, t.max)}</span></div>
             <div class="hp-box"><div class="hp-big">${t.hp}<small> / ${t.max}</small></div>${hpBar(t.hp, t.max)}</div>
             <div class="hp-ctrl"><input type="number" id="sbHp" inputmode="numeric" min="0" placeholder="0" aria-label="Amount"><button type="button" class="btn btn-danger btn-sm" data-act="m-hurt">Damage</button><button type="button" class="btn btn-heal btn-sm" data-act="m-heal">Heal</button></div></div>` : ''}
-          <div class="sb-sub">${monsterLine(m)}</div><hr class="sb-rule">
+          ${Store.monImg(m.i) ? html`<div class="btn-row">${disc(m.n, '#e2654f', Store.monImg(m.i), 'lg monster')}</div>` : ''}<div class="sb-sub">${monsterLine(m)}</div><hr class="sb-rule">
           <div>${line('Armor Class', `${m.ac}${m.acn ? ` (${m.acn})` : ''}`)}${line('Hit Points', `${m.hp} (${m.hd})`)}${line('Speed', m.speed)}</div><hr class="sb-rule">
           <div class="sb-abil">${ab}</div><hr class="sb-rule">
           <div>${line('Saving Throws', saves)}${line('Skills', skills)}${line('Damage Vulnerabilities', m.vul)}${line('Damage Resistances', m.res)}${line('Damage Immunities', m.imm)}${line('Condition Immunities', m.cimm)}${line('Senses', m.senses)}${line('Languages', m.lang || '—')}${line('Challenge', `${Core.crLabel(m.cr)} (${m.xp.toLocaleString()} XP) · Proficiency ${fmtMod(m.pb)}`)}</div>
@@ -1941,7 +1972,7 @@ const UI = (() => {
   function openTokenMore(t) {
     Sheet.open({
       title: 'Token options',
-      live: ['tokens'],
+      live: ['tokens', 'art'],
       render() {
         const tok = S.tokens.get(t.id);
         if (!tok) return html`<p class="hint">This token is gone.</p>`;
@@ -1952,6 +1983,7 @@ const UI = (() => {
           <div class="field"><span>Size</span><div class="seg">${[[0.5, 'Tiny'], [1, 'Small/Med'], [2, 'Large'], [3, 'Huge'], [4, 'Garg.']].map(([s, l]) => html`<button type="button" data-act="size" data-s="${s}" aria-pressed="${Number(tok.size || 1) === s}">${l}</button>`)}</div></div>
           ${!isPc ? html`<div class="grid2"><label class="field"><span>Max HP</span><input type="number" id="tkMax" value="${tok.max || ''}" min="0" max="9999" inputmode="numeric"></label><label class="field"><span>AC</span><input type="number" id="tkAc" value="${tok.ac || ''}" min="0" max="40" inputmode="numeric"></label></div>
           <div class="field"><span>Color</span><div class="swatches">${['#e2654f', ...Store.PALETTE].map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="color" data-c="${col}" aria-pressed="${tok.color === col}" aria-label="Color ${col}"></button>`)}</div></div>` : ''}
+          ${tok.mon ? html`<div class="field"><span>Picture for every ${(info.mon && info.mon.n) || 'monster'}</span><div class="btn-row">${info.img ? disc(info.name, info.color, info.img, 'lg monster') : ''}<label class="btn btn-sm">${icon('upload')} Set picture<input type="file" id="tkImg" accept="image/*" class="sr"></label>${S.art.has(tok.mon) ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="img-clear">Remove</button>` : ''}</div></div>` : ''}
           <div class="btn-row">${S.dm ? html`<button type="button" class="btn" data-act="hide">${icon(tok.hidden ? 'eye' : 'eye-off')} ${tok.hidden ? 'Reveal to players' : 'Hide from players'}</button>` : ''}
             ${!isPc ? html`<button type="button" class="btn" data-act="dup">${icon('copy')} Duplicate</button>` : ''}
             <button type="button" class="btn btn-danger" data-act="remove">${icon('trash')} Remove from map</button></div>`;
@@ -1962,6 +1994,7 @@ const UI = (() => {
         if (a === 'size') Store.Act.patchToken(tok.id, { size: Number(b.dataset.s) });
         else if (a === 'color') Store.Act.patchToken(tok.id, { color: b.dataset.c });
         else if (a === 'hide') Store.Act.patchToken(tok.id, { hidden: tok.hidden ? 0 : 1 });
+        else if (a === 'img-clear' && tok.mon) Store.W.del('art/' + tok.mon);
         else if (a === 'dup') {
           const spot = Board.freeSpot(tok.size);
           const copy = Object.assign({}, tok, { c: spot.c, r: spot.r, ts: Date.now(), hp: tok.max, conds: [] });
@@ -1981,6 +2014,10 @@ const UI = (() => {
         if (tg.id === 'tkMax') {
           const mx = Math.max(0, Math.floor(Number(tg.value) || 0));
           Store.Act.patchToken(tok.id, { max: mx, hp: Math.min(tok.hp == null ? mx : tok.hp, mx) });
+        }
+        if (tg.id === 'tkImg' && tg.files && tg.files[0] && tok.mon) {
+          makePortrait(tg.files[0]).then((url) => Store.W.set('art/' + tok.mon, { img: url, by: S.me.pk, ts: Date.now() })).then(() => toast('Picture set for every token of this monster.')).catch((er) => toast(er.message || 'That picture couldn’t be used.', 'warn'));
+          return;
         }
         if (tg.id === 'tkVision') Store.Act.patchToken(tok.id, { vision: tg.value === '' ? null : Math.max(0, Math.min(1000, Number(tg.value) || 0)) });
         if (tg.id === 'tkAc') Store.Act.patchToken(tok.id, { ac: Math.max(0, Math.floor(Number(tg.value) || 0)) });
@@ -2248,7 +2285,7 @@ const UI = (() => {
         <input type="search" id="monQ" value="${Enc.q}" placeholder="Search monsters" aria-label="Search monsters" autocomplete="off">
         <div class="grid3"><label class="field"><span>CR from</span><select id="crMin">${['', ...CRS].map((v) => crOpt(v, Enc.crMin))}</select></label><label class="field"><span>CR to</span><select id="crMax">${['', ...CRS].map((v) => crOpt(v, Enc.crMax))}</select></label>
           <label class="field"><span>Type</span><select id="monType"><option value="">Any</option>${types.map((t) => html`<option value="${t}" ${Enc.type === t ? 'selected' : ''}>${titleCase(t)}</option>`)}</select></label></div>
-        <div class="list">${list.slice(0, Enc.limit).map((m) => html`<div class="row mon-row"><span class="cr">${Core.crLabel(m.cr)}</span><button type="button" class="main" data-act="sb" data-i="${m.i}" style="background:none;border:0;text-align:left;cursor:pointer;padding:0;color:inherit;min-width:0"><span class="title" style="display:block">${m.n}</span><span class="sub" style="display:block">${m.size} ${m.type} · ${m.xp.toLocaleString()} XP · AC ${m.ac} · HP ${m.hp}</span></button>
+        <div class="list">${list.slice(0, Enc.limit).map((m) => html`<div class="row mon-row">${Store.monImg(m.i) ? disc(m.n, '#e2654f', Store.monImg(m.i), 'sm monster') : ''}<span class="cr">${Core.crLabel(m.cr)}</span><button type="button" class="main" data-act="sb" data-i="${m.i}" style="background:none;border:0;text-align:left;cursor:pointer;padding:0;color:inherit;min-width:0"><span class="title" style="display:block">${m.n}</span><span class="sub" style="display:block">${m.size} ${m.type} · ${m.xp.toLocaleString()} XP · AC ${m.ac} · HP ${m.hp}</span></button>
           <button type="button" class="btn btn-sm btn-icon" data-act="add" data-i="${m.i}" aria-label="Add ${m.n}">${icon('plus')}</button></div>`)}</div>
         ${list.length > Enc.limit ? html`<button type="button" class="btn btn-ghost" data-act="more-mons">Show ${Math.min(60, list.length - Enc.limit)} more</button>` : ''}
       </div>
@@ -3204,7 +3241,8 @@ const UI = (() => {
           <p class="hint">Write MOD for the caster’s spellcasting modifier. Leave a box empty if the spell doesn’t do that.</p>
           ${fArea('higher', 'At higher levels (text)', 'Optional', 2000)}</div>`;
       case 'monster':
-        return html`${head}<div class="card"><div class="grid3">${fSel('size', 'Size', Core.SIZES.map((x) => [x, x]))}${fText('type', 'Type', 'beast, undead, fey…', 40)}${fText('align', 'Alignment', 'unaligned', 40)}</div>
+        return html`${head}<div class="card"><div class="field"><span>Picture</span><div class="btn-row">${f.img ? disc(f.name, '#e2654f', f.img, 'lg') : ''}<label class="btn btn-sm">${icon('upload')} ${f.img ? 'Change picture' : 'Add a picture'}<input type="file" id="hb-img-file" accept="image/*" class="sr"></label>${f.img ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="hb-tog" data-path="img">Remove</button>` : ''}</div></div></div>
+          <div class="card"><div class="grid3">${fSel('size', 'Size', Core.SIZES.map((x) => [x, x]))}${fText('type', 'Type', 'beast, undead, fey…', 40)}${fText('align', 'Alignment', 'unaligned', 40)}</div>
           <div class="grid3">${fNum('ac', 'Armor class')}${fText('acn', 'Armor note', 'natural armor', 60)}${fSel('cr', 'Challenge', Core.CR_LIST.map((c) => [String(c), Core.crLabel(c) + ' (' + Core.CR_XP[Core.CR_LIST.indexOf(c)].toLocaleString() + ' XP)']))}</div>
           <div class="grid3">${fNum('hp', 'Hit points')}${fText('hd', 'Hit dice', '4d8+4', 20)}${fText('speed', 'Speed', '30 ft., fly 60 ft.', 80)}</div>
           <div class="abil-grid">${Core.ABILS.map((a, i) => fNum('abil.' + i, Core.ABIL_SHORT[a]))}</div>
@@ -3263,8 +3301,9 @@ const UI = (() => {
     const count = (k) => [...S.hb.values()].filter((f) => (f.kind || 'feat') === k).length;
     const where = { feat: 'Heroes take feats in the hero builder.', item: 'Add items to a hero’s inventory by name, then equip them on the sheet.', spell: 'Spells appear in the hero builder for the classes you tag, and on spell cards.', monster: 'Monsters appear in the Encounter tab’s bestiary.', subclass: 'Subclasses appear in the hero builder.', class: 'Classes appear in the hero builder.' }[kind];
     return html`<div class="panel-head"><h2>Homebrew</h2>${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} New ${kindName(kind)}</button>`}</div>
+      <div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" data-act="hb-export" ${S.hb.size ? '' : 'disabled'}>Export homebrew</button>${S.readOnly ? '' : html`<button type="button" class="btn btn-ghost btn-sm" data-act="hb-import">Import homebrew</button>`}</div>
       <div class="chips">${HB_KINDS.map(([k, label]) => html`<button type="button" class="chip" data-act="hb-kind" data-k="${k}" aria-pressed="${k === kind}">${label}${count(k) ? ` · ${count(k)}` : ''}</button>`)}</div>
-      ${list.length ? html`<div class="list">${list.map((f) => html`<div class="row"><span class="main"><span class="title" style="display:block">${f.name || 'Untitled'}</span><span class="sub" style="display:block">${hbSummary(f)}</span></span>
+      ${list.length ? html`<div class="list">${list.map((f) => html`<div class="row"><span class="main"><span class="title" style="display:block">${f.name || 'Untitled'}</span><span class="sub" style="display:block">${hbSummary(f)}${f.byName || Store.accountName(f.by) ? ' · by ' + (f.byName || Store.accountName(f.by)) : ''}</span></span>
           ${canEditHb(f) ? html`<button type="button" class="btn btn-sm" data-act="hb-edit" data-id="${f.id}">${icon('edit')} Edit</button>` : ''}</div>`)}</div>`
         : html`<div class="empty"><h3>No homebrew ${kindName(kind)}s yet</h3><p class="hint">Write your table’s own and pick what they do from menus, so the app can apply them.</p>${S.readOnly ? '' : html`<button type="button" class="btn btn-primary" data-act="hb-new">${icon('plus')} Make a ${kindName(kind)}</button>`}</div>`}
       <p class="hint">${where} Everything here belongs to this campaign and is shared with everyone at the table.</p>`;
@@ -3276,6 +3315,36 @@ const UI = (() => {
       case 'hb-kind':
         HB.kind = b.dataset.k;
         break;
+      case 'hb-export': {
+        const items = [...S.hb.values()].map((x) => Object.assign({ id: x.id }, Store.clone(x)));
+        saveFile(`tavern-table-homebrew-${stamp()}.json`, JSON.stringify({ type: 'tavern-table-homebrew', v: 1, items }));
+        return;
+      }
+      case 'hb-import':
+        pickFile('.json,application/json').then((file) => file && file.text()).then((txt) => {
+          if (!txt) return;
+          let n = 0;
+          let skipped = 0;
+          try {
+            const data = JSON.parse(txt);
+            if (!data || data.type !== 'tavern-table-homebrew' || !Array.isArray(data.items)) throw new Error('bad');
+            const have = new Set([...S.hb.values()].map((x) => (x.kind || 'feat') + '|' + String(x.name).toLowerCase()));
+            data.items.slice(0, 2000).forEach((x) => {
+              if (!x || typeof x !== 'object' || !/^[A-Za-z0-9_-]{1,80}$/.test(String(x.id)) || !HB_KINDS.some((k) => k[0] === (x.kind || 'feat'))) return skipped++;
+              const key = (x.kind || 'feat') + '|' + String(x.name).toLowerCase();
+              if (S.hb.has(x.id) || have.has(key)) return skipped++; // already here: never duplicated or overwritten
+              const doc = Object.assign({}, x);
+              delete doc.id;
+              Store.W.set('homebrew/' + x.id, doc);
+              have.add(key);
+              n++;
+            });
+          } catch (er) {
+            return toast('That file isn’t a Tavern Table homebrew export.', 'warn');
+          }
+          toast(`Imported ${n} new ${n === 1 ? 'entry' : 'entries'}${skipped ? `, skipped ${skipped} already here` : ''}.`);
+        });
+        return;
       case 'hb-new':
         HB.view = 'edit';
         HB.id = null;
@@ -3324,7 +3393,8 @@ const UI = (() => {
         break;
       }
       case 'hb-tog':
-        if (f) setPath(f, path, !getPath(f, path));
+        if (f && path === 'img') f.img = '';
+        else if (f) setPath(f, path, !getPath(f, path));
         break;
       case 'hb-chip': {
         if (!f) return;
@@ -3366,7 +3436,7 @@ const UI = (() => {
           return;
         }
         const existing = HB.id && S.hb.get(HB.id);
-        const doc = Object.assign(Store.clone(f), { name, desc: String(f.desc || '').slice(0, 6000), by: existing ? existing.by : S.me.pk });
+        const doc = Object.assign(Store.clone(f), { name, desc: String(f.desc || '').slice(0, 6000), by: existing ? existing.by : S.me.pk, byName: existing ? existing.byName || Store.accountName(existing.by) : S.me.nick || '' });
         if (sizeOk(doc)) {
           Store.Act.saveHomebrew(HB.id, doc);
           toast(`Saved “${name}”.`);
@@ -3410,6 +3480,12 @@ const UI = (() => {
     if (HB.draft && t.dataset.path) setPath(HB.draft, t.dataset.path, t.value);
   }
   function hbChange(t) {
+    if (t.id === 'hb-img-file' && t.files && t.files[0] && HB.draft) {
+      return makePortrait(t.files[0]).then((url) => {
+        HB.draft.img = url;
+        renderPanel('homebrew', true);
+      }).catch((er) => toast(er.message || 'That picture couldn’t be used.', 'warn'));
+    }
     hbInput(t);
     if (t.dataset.path) {
       panels.homebrew.typing = false;
@@ -3515,7 +3591,15 @@ const UI = (() => {
           seen.add(k);
           people.push(p);
         });
-        return html`<div class="card"><div class="card-title"><h3>Campaign</h3>${S.p2p && S.p2p.role === 'guest' ? '' : html`<button type="button" class="btn btn-sm" data-act="campaigns">${icon('book')} Switch or start another</button>`}</div>
+        const me = S.me.acct && S.accounts.get(S.me.acct);
+        return html`<div class="card"><div class="card-title"><h3>Account</h3>${me ? html`<button type="button" class="btn btn-sm" data-act="signout">Sign out</button>` : html`<button type="button" class="btn btn-sm btn-primary" data-act="account">Sign in or create</button>`}</div>
+          <p class="prose" style="margin:0">${me ? html`Signed in as <b>${me.name}</b>. Your settings and heroes follow you to any device.` : 'Not signed in: settings stay on this device only.'}</p>
+          ${S.dm && S.accounts.size ? html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${[...S.accounts.entries()].map(([id, a]) => html`<div class="row"><span class="main"><span class="title" style="display:block">${a.name}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
+            <input type="password" id="rp-${id}" inputmode="numeric" maxlength="6" placeholder="New PIN" aria-label="New PIN for ${a.name}" style="width:110px"><button type="button" class="btn btn-sm" data-act="reset-pin" data-id="${id}">Reset PIN</button></div>`)}</div></div></details>` : ''}</div>
+          ${S.dm || S.mode === 'local' || (S.p2p && S.p2p.role === 'host') ? html`<div class="card"><div class="card-title"><h3>Backup</h3></div>
+            <p class="hint">One file with the whole table: accounts, heroes, inventories, homebrew, campaigns, maps, tokens, fog and the dice log. Restore it here or on another device.</p>
+            <div class="btn-row"><button type="button" class="btn btn-sm" data-act="backup">Download backup</button><button type="button" class="btn btn-sm" data-act="restore">Restore backup</button></div></div>` : ''}
+          <div class="card"><div class="card-title"><h3>Campaign</h3>${S.p2p && S.p2p.role === 'guest' ? '' : html`<button type="button" class="btn btn-sm" data-act="campaigns">${icon('book')} Switch or start another</button>`}</div>
           <p class="prose" style="margin:0"><b>${Store.campaignName()}</b>. Each campaign has its own maps, heroes, encounters, dice log and homebrew.</p></div>
           <div class="card"><div class="card-title"><h3>You</h3>${S.me.isOwner ? html`<span class="badge brass">Table owner</span>` : ''}</div>
           <label class="field"><span>Your name at the table</span><input type="text" id="pNick" value="${S.me.nick}" maxlength="40" placeholder="What friends call you" autocomplete="off"></label>
@@ -3555,6 +3639,33 @@ const UI = (() => {
         }
         if (a === 'scenes') return openScenes();
         if (a === 'campaigns') return openCampaigns();
+        if (a === 'account') return openAccount();
+        if (a === 'signout') {
+          Store.signOut();
+          return location.reload();
+        }
+        if (a === 'reset-pin') {
+          const inp = document.getElementById('rp-' + b.dataset.id);
+          return Store.resetPin(b.dataset.id, inp && inp.value).then(() => toast('PIN reset. Tell them the new one.')).catch((er) => toast(er.message, 'warn'));
+        }
+        if (a === 'backup') {
+          toast('Gathering the whole table…');
+          return Store.backup().then((bk) => saveFile(`tavern-table-backup-${stamp()}.json`, JSON.stringify(bk))).catch((er) => toast(er.message || 'The backup didn’t work.', 'warn'));
+        }
+        if (a === 'restore') {
+          return pickFile('.json,application/json').then((f) => f && f.text()).then((txt) => {
+            if (!txt) return;
+            return confirmSheet('Restore this backup?', 'Everything in the file is written back into this table. Things that exist here but not in the file stay. The page reloads afterwards.', 'Restore', () => {
+              let bk;
+              try {
+                bk = JSON.parse(txt);
+              } catch (er) {
+                return toast('That file isn’t a Tavern Table backup.', 'warn');
+              }
+              Store.restore(bk).then(() => location.reload()).catch((er) => toast(er.message || 'Restoring didn’t work.', 'warn'));
+            }, false);
+          });
+        }
         if (a === 'host-start') return Store.startHosting();
         if (a === 'host-stop') return confirmSheet('Stop playing online?', 'Friends are disconnected and the table goes back to this device only. Nothing is deleted, and you can host again later with the same link.', 'Stop hosting', () => Store.stopHosting(), false);
         if (a === 'leave-online') return Store.leaveOnline();
@@ -3575,6 +3686,50 @@ const UI = (() => {
   }
   let showNames = Store.LS.get('tt.names', false);
 
+  function openAccount() {
+    const st = { err: '', busy: false, pick: '' };
+    Sheet.open({
+      title: 'Welcome to the table',
+      render() {
+        const list = [...S.accounts.entries()].sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
+        return html`${list.length ? html`<div class="card"><div class="card-title"><h3>Sign in</h3></div>
+            <label class="field"><span>Your name</span><select id="acPick">${list.map(([id, a]) => html`<option value="${id}" ${st.pick === id ? 'selected' : ''}>${a.name}</option>`)}</select></label>
+            <label class="field"><span>PIN</span><input type="password" id="acPin" inputmode="numeric" maxlength="6" autocomplete="current-password"></label>
+            <div class="btn-row end"><button type="button" class="btn btn-primary" data-act="signin">Sign in</button></div></div>` : ''}
+          <div class="card"><div class="card-title"><h3>${list.length ? 'New here? Make an account' : 'Make your account'}</h3></div>
+            <label class="field"><span>Name</span><input type="text" id="acName" maxlength="40" value="${S.me.nick || ''}" autocomplete="off"></label>
+            <div class="grid2"><label class="field"><span>PIN (4–6 digits)</span><input type="password" id="acNew" inputmode="numeric" maxlength="6" autocomplete="new-password"></label>
+            <label class="field"><span>PIN again</span><input type="password" id="acNew2" inputmode="numeric" maxlength="6" autocomplete="new-password"></label></div>
+            <div class="btn-row end"><button type="button" class="btn ${list.length ? '' : 'btn-primary'}" data-act="create" ${st.busy ? 'disabled' : ''}>Create account</button></div>
+            <p class="hint">Your account keeps your name, color, role, heroes and the hero you play, on any device that opens this table. ${S.me.acct ? '' : 'Heroes already on this device move into the first account made here.'}</p></div>
+          ${st.err ? html`<p class="err">${st.err}</p>` : ''}`;
+      },
+      act(a, b, e, draw) {
+        if (a === 'signin') {
+          const id = $('#acPick').value;
+          st.pick = id;
+          if (Store.signIn(id, $('#acPin').value)) return location.reload();
+          st.err = 'That PIN doesn’t match. Ask the DM to reset it if you forgot it.';
+          return draw();
+        }
+        if (a === 'create') {
+          const pin = $('#acNew').value;
+          if (pin !== $('#acNew2').value) {
+            st.err = 'The two PINs aren’t the same.';
+            return draw();
+          }
+          const name = $('#acName').value; // read before the form redraws
+          st.busy = true;
+          draw();
+          Store.createAccount(name, pin).then(() => location.reload()).catch((er) => {
+            st.busy = false;
+            st.err = er.message;
+            draw();
+          });
+        }
+      },
+    });
+  }
   function askName() {
     if (S.me.nick) return;
     Sheet.open({
@@ -3638,6 +3793,8 @@ const UI = (() => {
     Store.on('encs', () => schedule('encounter'));
     Store.on('homebrew', () => schedule('homebrew', 'heroes'));
     Store.on('party', () => schedule('heroes'));
+    Store.on('art', () => schedule('encounter'));
+    Store.on('accounts', () => renderTop());
     Store.on('game', () => schedule('heroes'));
     Store.on('tokens', () => schedule('combat', 'heroes'));
     Store.on('init', () => schedule('combat'));
@@ -3691,7 +3848,12 @@ const UI = (() => {
     }
     renderTop();
     renderTabs();
-    if (S.mode === 'remote' && !S.me.nick) setTimeout(askName, 600);
+    // everyone signs in once per device (automated test browsers skip this unless the address has ?acct)
+    const testSkip = navigator.webdriver && !/[?&]acct\b/.test(location.search);
+    const wantAcct = () => S.loaded && !S.me.acct && !testSkip;
+    if (wantAcct()) setTimeout(openAccount, 300);
+    else if (!S.loaded && !testSkip) Store.on('loaded', () => wantAcct() && !Sheet.cur && openAccount());
+    else if (S.mode === 'remote' && !S.me.nick) setTimeout(askName, 600);
   }
 
   return {

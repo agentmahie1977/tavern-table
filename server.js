@@ -67,7 +67,7 @@ function deepMerge(a, b) {
 }
 const isChunk = (p) => p.startsWith('mapchunks/');
 // homebrew belongs to the whole game: it lives in the main table and every campaign sees it
-const isGlobal = (p) => p.startsWith('homebrew/');
+const isGlobal = (p) => /^(homebrew|accounts|art)\//.test(p);
 
 // One table per campaign: the default campaign ("main") lives in DATA_DIR itself,
 // others in DATA_DIR/campaigns/<id>/. The list of campaigns is DATA_DIR/campaigns.json.
@@ -208,13 +208,14 @@ function json(res, status, obj) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(body);
 }
-function readBody(req) {
+function readBody(req, limit) {
+  const max = limit || MAX_BODY;
   return new Promise((resolve, reject) => {
     let size = 0;
     const parts = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(Object.assign(new Error('too large'), { status: 413 }));
         req.destroy();
       } else parts.push(c);
@@ -263,6 +264,37 @@ const server = http.createServer(async (req, res) => {
     if (!route.startsWith('/api/')) return json(res, 404, { code: 'not_found' });
     if (!authorized(url)) return json(res, 401, { code: 'revoked', message: 'wrong password' });
 
+    // whole-table backup and restore (all campaigns, map pieces, accounts, homebrew)
+    if (req.method === 'GET' && route === '/api/backup') {
+      const tables = {};
+      ['main', ...registry.map((c) => c.id)].forEach((cid) => {
+        const t = table(cid);
+        const docs = Object.fromEntries(t.docs);
+        try {
+          fs.readdirSync(t.chunkDir).forEach((f) => {
+            if (f.endsWith('.json')) docs['mapchunks/' + f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(t.chunkDir, f), 'utf8'));
+          });
+        } catch (e) { /* no pieces */ }
+        tables[cid] = docs;
+      });
+      return json(res, 200, { campaigns: [{ id: 'main', name: 'Main campaign' }].concat(registry), tables });
+    }
+    if (req.method === 'POST' && route === '/api/restore') {
+      const body = await readBody(req, 300 * 1024 * 1024);
+      if (!isObj(body.tables)) return json(res, 400, { code: 'invalid_argument' });
+      (Array.isArray(body.campaigns) ? body.campaigns : []).forEach((c) => {
+        if (c && CAMP_RE.test(c.id) && c.id !== 'main' && !campaignExists(c.id)) registry.push({ id: c.id, name: String(c.name || 'Campaign').slice(0, 60), created: Date.now() });
+      });
+      saveRegistry();
+      for (const cid of Object.keys(body.tables)) {
+        if (!CAMP_RE.test(cid) || !campaignExists(cid)) continue;
+        for (const [p, d] of Object.entries(body.tables[cid] || {})) {
+          if (!PATH_RE.test(p) || !isObj(d)) continue;
+          applyWrite(table(isGlobal(p) ? 'main' : cid), { t: 'set', p, d });
+        }
+      }
+      return json(res, 200, { ok: true });
+    }
     if (route === '/api/campaigns') {
       if (req.method === 'GET') return json(res, 200, { campaigns: registry });
       if (req.method === 'POST') {

@@ -38,6 +38,8 @@ const Store = (() => {
     encs: new Map(),
     hb: new Map(), // homebrew feats, shared by the table
     party: new Map(), // party inventory items
+    accounts: new Map(), // name + PIN accounts
+    art: new Map(), // pictures for monsters, by monster id
     log: [],
     peers: [],
     maps: new Map(),
@@ -123,7 +125,9 @@ const Store = (() => {
   }
   const campSuffix = (cid) => (cid === 'main' ? '' : ':' + cid);
   // Homebrew belongs to the whole game, not one campaign: it always lives with the main campaign.
-  const isGlobalPath = (p) => p === 'homebrew' || String(p).startsWith('homebrew/');
+  // homebrew, accounts and monster pictures belong to the whole game, not one campaign
+  const GLOBAL_COLS = ['homebrew', 'accounts', 'art'];
+  const isGlobalPath = (p) => GLOBAL_COLS.some((c) => p === c || String(p).startsWith(c + '/'));
 
   /* ------------------------------------------- in-memory doc mirror */
   // Documents plus collection/doc watchers; shared by the solo and self-hosted backends
@@ -955,7 +959,7 @@ const Store = (() => {
   };
 
   /* ------------------------------------------------------------ relay */
-  const RELAY_PATH = /^(tokens|templates|log|init|chars|game|homebrew|party)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
+  const RELAY_PATH = /^(tokens|templates|log|init|chars|game|homebrew|party|accounts|art)\/[A-Za-z0-9_.~:@+-]{1,80}$/;
   const RELAY_MAX = 2300;
   const relay = { seq: 0, ops: [] };
   const execState = { applied: new Map(), lastAck: '' };
@@ -1084,7 +1088,7 @@ const Store = (() => {
 
   /* ---------------------------------------------------- subscriptions */
   const loadedSet = new Set();
-  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'hb', 'party', 'log'];
+  const NEEDED = ['game', 'scenes', 'tokens', 'tpls', 'chars', 'init', 'encs', 'hb', 'party', 'accounts', 'art', 'log'];
   let loadTimer = 0;
   function markLoaded(name, meta) {
     if (meta && meta.fromCache) return;
@@ -1144,6 +1148,8 @@ const Store = (() => {
     col('encounters', 'encs', 'encs');
     col('homebrew', 'hb', 'homebrew');
     col('party', 'party', 'party');
+    col('accounts', 'accounts', 'accounts');
+    col('art', 'art', 'art');
     B.watchCol('log', { orderBy: 'ts', dir: 'desc', limit: 80 }, (rows, meta) => {
       const list = rows.map((r) => Object.assign({}, r.raw, { id: r.id })).reverse();
       const fresh = [];
@@ -1648,7 +1654,11 @@ const Store = (() => {
         LS.set('tt.pk', pk);
       }
     }
+    // signed in: the account id is who this person is, on every device
+    const acct = LS.get('tt.acct', null);
+    if (typeof acct === 'string' && /^[A-Za-z0-9_.:@+-]{1,80}$/.test(acct)) pk = acct;
     S.me = {
+      acct: typeof acct === 'string' ? acct : null,
       pk,
       uid: (me && me.id) || null,
       isOwner: !!(me && me.isOwner),
@@ -1686,6 +1696,226 @@ const Store = (() => {
         await Store.db.doc('camp/' + S.camp + '/homebrew/' + d.id).delete();
       }
     } catch (e) { /* try again next time */ }
+  }
+
+  /* ------------------------------------------------------- accounts */
+  // SHA-256 in plain JS: crypto.subtle is missing on plain-http LAN servers (our own server during filtering)
+  function sha256(str) {
+    const K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+    const bytes = new TextEncoder().encode(str);
+    const len = bytes.length;
+    const words = new Uint32Array(((len + 9 + 63) >> 6) << 4);
+    for (let i = 0; i < len; i++) words[i >> 2] |= bytes[i] << (24 - (i % 4) * 8);
+    words[len >> 2] |= 0x80 << (24 - (len % 4) * 8);
+    words[words.length - 1] = len * 8;
+    const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const w = new Uint32Array(64);
+    const rot = (x, n) => (x >>> n) | (x << (32 - n));
+    for (let o = 0; o < words.length; o += 16) {
+      for (let i = 0; i < 16; i++) w[i] = words[o + i];
+      for (let i = 16; i < 64; i++) w[i] = (w[i - 16] + (rot(w[i - 15], 7) ^ rot(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rot(w[i - 2], 17) ^ rot(w[i - 2], 19) ^ (w[i - 2] >>> 10))) | 0;
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let i = 0; i < 64; i++) {
+        const t1 = (h + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+        const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      }
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+    return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+  }
+  // salted, stretched hash of a PIN (the PIN itself is never stored)
+  function hashPin(pin, salt) {
+    let h = salt + ':' + pin;
+    for (let i = 0; i < 2000; i++) h = sha256(h + salt);
+    return h;
+  }
+  const PIN_RE = /^\d{4,6}$/;
+  async function createAccount(name, pin) {
+    name = String(name || '').trim().slice(0, 40);
+    if (!name) throw new Error('Pick a name.');
+    if (!PIN_RE.test(String(pin))) throw new Error('The PIN must be 4 to 6 digits.');
+    if ([...S.accounts.values()].some((a) => String(a.name).toLowerCase() === name.toLowerCase())) throw new Error('That name is taken. Sign in instead, or pick another name.');
+    // the first account on this device takes over its heroes: it gets the id they already belong to
+    const id = !S.accounts.has(S.me.pk) && !S.me.acct ? S.me.pk : uid('u');
+    const salt = uid('s');
+    const ok = await W.set('accounts/' + id, { name, salt, hash: hashPin(pin, salt), color: S.me.color, dm: S.dm ? 1 : 0, playing: S.myChar ? { [S.camp]: S.myChar } : {}, created: Date.now() });
+    if (ok === false) throw new Error('The account couldn’t be saved. Check your connection.');
+    LS.set('tt.acct', id);
+    LS.set('tt.nick', name);
+    return id;
+  }
+  function signIn(id, pin) {
+    const a = S.accounts.get(id);
+    if (!a || a.hash !== hashPin(String(pin), a.salt)) return false;
+    LS.set('tt.acct', id);
+    // the account's own settings win over whatever this device had
+    LS.set('tt.nick', a.name || '');
+    if (a.color) LS.set('tt.color', a.color);
+    LS.set('tt.role', a.dm ? 'dm' : 'player');
+    LS.set('tt.char', (a.playing && a.playing[S.camp]) || null);
+    return true;
+  }
+  function signOut() {
+    LS.set('tt.acct', null);
+    LS.set('tt.pk', uid('p')); // signed out: not the owner of anyone's heroes
+    ['tt.nick', 'tt.char', 'tt.role'].forEach((k) => LS.set(k, null));
+  }
+  function resetPin(id, pin) {
+    if (!PIN_RE.test(String(pin))) return Promise.reject(new Error('The PIN must be 4 to 6 digits.'));
+    const salt = uid('s');
+    return W.upd('accounts/' + id, { salt, hash: hashPin(String(pin), salt) });
+  }
+  function saveToAccount(patch) {
+    if (!S.me.acct || !S.accounts.has(S.me.acct) || S.readOnly) return;
+    const clean = {};
+    for (const k in patch) if (patch[k] !== undefined) clean[k] = patch[k];
+    if (Object.keys(clean).length) W.upd('accounts/' + S.me.acct, clean);
+  }
+  // after loading (and whenever the account changes elsewhere): this device follows the account
+  function applyAccount() {
+    const a = S.me.acct && S.accounts.get(S.me.acct);
+    if (!a) return;
+    let changed = false;
+    if (a.name && a.name !== S.me.nick) {
+      S.me.nick = a.name;
+      LS.set('tt.nick', a.name);
+      changed = true;
+    }
+    if (a.color && a.color !== S.me.color) {
+      S.me.color = a.color;
+      LS.set('tt.color', a.color);
+      changed = true;
+    }
+    if (a.dm != null && !!a.dm !== S.dm) {
+      S.dm = !!a.dm;
+      LS.set('tt.role', S.dm ? 'dm' : 'player');
+      changed = true;
+    }
+    const pl = a.playing && a.playing[S.camp];
+    if (pl && pl !== S.myChar && S.chars.has(pl)) {
+      S.myChar = pl;
+      LS.set('tt.char', pl);
+      changed = true;
+    }
+    if (changed) {
+      basePresence();
+      emit('me');
+    }
+  }
+  on('accounts', applyAccount);
+  on('loaded', applyAccount);
+
+  /* ------------------------------------------------- backup / restore */
+  // One file with the whole table: every campaign's documents (map pieces too) plus accounts and homebrew.
+  const CAMP_COLS = ['game', 'scenes', 'tokens', 'templates', 'chars', 'init', 'encounters', 'log', 'party', 'mapchunks'];
+  function idbAll(name, write) {
+    return new Promise((res) => {
+      let rq;
+      try {
+        rq = indexedDB.open(name, 1);
+      } catch (e) {
+        return res({});
+      }
+      rq.onupgradeneeded = () => rq.result.createObjectStore('chunks');
+      rq.onerror = () => res({});
+      rq.onsuccess = () => {
+        const db = rq.result;
+        const tx = db.transaction('chunks', write ? 'readwrite' : 'readonly');
+        const st = tx.objectStore('chunks');
+        const out = {};
+        if (write) {
+          Object.keys(write).forEach((k) => st.put(write[k], k));
+          tx.oncomplete = () => res(true);
+          tx.onerror = () => res(false);
+          return;
+        }
+        const keys = st.getAllKeys();
+        const vals = st.getAll();
+        tx.oncomplete = () => {
+          (keys.result || []).forEach((k, i) => (out[k] = vals.result[i]));
+          res(out);
+        };
+        tx.onerror = () => res({});
+      };
+    });
+  }
+  async function campaignList() {
+    try {
+      return (await Store.campaigns()).map((c) => ({ id: c.id, name: c.name }));
+    } catch (e) {
+      return [{ id: 'main', name: 'Main campaign' }];
+    }
+  }
+  async function backup() {
+    if (S.p2p && S.p2p.role === 'guest') throw new Error('Only the person hosting the table can back it up.');
+    const out = { type: 'tavern-table-backup', v: 1, created: Date.now(), campaigns: await campaignList(), tables: {} };
+    if (S.server && S.conn) {
+      const r = await S.conn.getJson('api/backup');
+      out.campaigns = r.campaigns || out.campaigns;
+      out.tables = r.tables || {};
+      return out;
+    }
+    if (S.mode === 'remote' && Store.db && !S.p2p) {
+      const read = async (col) => (await Store.db.collection(col).get()).docs.filter((d) => d.exists !== false).map((d) => [d.id, d.data()]);
+      for (const c of out.campaigns) {
+        const t = (out.tables[c.id] = {});
+        const pre = c.id === 'main' ? '' : 'camp/' + c.id + '/';
+        for (const col of CAMP_COLS) (await read(pre + col)).forEach(([id, d]) => (t[col + '/' + id] = d));
+      }
+      const t = (out.tables.main = out.tables.main || {});
+      for (const col of GLOBAL_COLS.concat(['campaigns'])) (await read(col)).forEach(([id, d]) => (t[col + '/' + id] = d));
+      return out;
+    }
+    // this device's storage (solo, or hosting from the GitHub link)
+    for (const c of out.campaigns) {
+      const sfx = campSuffix(c.id);
+      out.tables[c.id] = Object.assign({}, LS.get('tt.local.v1' + sfx, {}) || {}, await idbAll('tt.local.maps' + sfx));
+    }
+    return out;
+  }
+  async function restore(b) {
+    if (!b || b.type !== 'tavern-table-backup' || !b.tables || typeof b.tables !== 'object') throw new Error('That file isn’t a Tavern Table backup.');
+    if (S.p2p && S.p2p.role === 'guest') throw new Error('Only the person hosting the table can restore it.');
+    const camps = (Array.isArray(b.campaigns) ? b.campaigns : []).filter((c) => c && CAMP_RE.test(c.id));
+    const okPath = (p) => /^[a-z]{1,20}\/[A-Za-z0-9_~:@+-][A-Za-z0-9_.~:@+-]{0,119}$/.test(p);
+    if (S.server && S.conn) return S.conn.post('api/restore', { campaigns: camps, tables: b.tables });
+    if (S.mode === 'remote' && Store.db && !S.p2p) {
+      for (const cid of Object.keys(b.tables)) {
+        if (!CAMP_RE.test(cid)) continue;
+        const pre = cid === 'main' ? '' : 'camp/' + cid + '/';
+        const docs = Object.entries(b.tables[cid] || {}).filter(([p, d]) => okPath(p) && isObj(d));
+        for (let i = 0; i < docs.length; i += 20) await Promise.all(docs.slice(i, i + 20).map(([p, d]) => Store.db.doc((isGlobalPath(p) || p.startsWith('campaigns/') ? '' : pre) + p).set(d)));
+      }
+      for (const c of camps) if (c.id !== 'main') await Store.db.doc('campaigns/' + c.id).set({ name: String(c.name || 'Campaign').slice(0, 60), created: Date.now() });
+      return true;
+    }
+    const reg = LS.get('tt.campaigns', []) || [];
+    camps.forEach((c) => c.id !== 'main' && !reg.some((x) => x.id === c.id) && reg.push({ id: c.id, name: String(c.name || 'Campaign').slice(0, 60), created: Date.now() }));
+    LS.set('tt.campaigns', reg);
+    for (const cid of Object.keys(b.tables)) {
+      if (!CAMP_RE.test(cid)) continue;
+      const sfx = campSuffix(cid);
+      const docs = Object.entries(b.tables[cid] || {}).filter(([p, d]) => okPath(p) && isObj(d));
+      // global things (accounts, homebrew, pictures) always go with the main campaign
+      const main = LS.get('tt.local.v1', {}) || {};
+      const here = cid === 'main' ? main : LS.get('tt.local.v1' + sfx, {}) || {};
+      const chunks = {};
+      docs.forEach(([p, d]) => {
+        if (p.startsWith('mapchunks/')) chunks[p] = d;
+        else if (isGlobalPath(p)) main[p] = d;
+        else here[p] = d;
+      });
+      try {
+        localStorage.setItem('tt.local.v1', JSON.stringify(main));
+        if (cid !== 'main') localStorage.setItem('tt.local.v1' + sfx, JSON.stringify(here));
+      } catch (e) {
+        throw new Error('This browser’s storage is full; the backup couldn’t be restored.');
+      }
+      if (Object.keys(chunks).length) await idbAll('tt.local.maps' + sfx, chunks);
+    }
+    return true;
   }
 
   /* --------------------------------------------- derived hero stats */
@@ -1754,12 +1984,14 @@ const Store = (() => {
     setNick(n) {
       S.me.nick = n;
       LS.set('tt.nick', n);
+      saveToAccount({ name: n.slice(0, 40) || undefined });
       pushPresence({ nm: n.slice(0, 40) });
       emit('me');
     },
     setColor(c) {
       S.me.color = c;
       LS.set('tt.color', c);
+      saveToAccount({ color: c });
       pushPresence({ col: c });
       emit('me');
     },
@@ -1831,6 +2063,15 @@ const Store = (() => {
       LS.set('tt.hosting', false);
       location.reload();
     },
+    // accounts
+    createAccount, signIn, signOut, resetPin, accountName: (id) => ((S.accounts.get(id) || {}).name || ''),
+    monImg: (id) => {
+      const a = id && S.art.get(id);
+      if (a && a.img) return a.img;
+      const m = id && Data.monstersById && Data.monstersById.get(id);
+      return (m && m.img) || null;
+    },
+    backup, restore,
     leaveOnline() {
       location.hash = '';
       location.reload();
@@ -1840,12 +2081,14 @@ const Store = (() => {
     setRole(dm) {
       S.dm = !!dm;
       LS.set('tt.role', dm ? 'dm' : 'player');
+      saveToAccount({ dm: dm ? 1 : 0 });
       pushPresence({ dm: dm ? 1 : 0 });
       emit('me');
     },
     setMyChar(id) {
       S.myChar = id;
       LS.set('tt.char', id);
+      saveToAccount({ playing: { [S.camp]: id || '' } });
       pushPresence({ ch: id });
       emit('me');
     },

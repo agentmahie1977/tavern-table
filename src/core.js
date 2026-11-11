@@ -485,6 +485,7 @@ const Core = (() => {
       abil: ab.map((v) => int(v, 1, 30)), cr, xp: CR_XP[CR_LIST.indexOf(cr)], pb: cr < 5 ? 2 : cr < 9 ? 3 : cr < 13 ? 4 : cr < 17 ? 5 : cr < 21 ? 6 : cr < 25 ? 7 : cr < 29 ? 8 : 9,
       senses: txt(f.senses, 120), lang: txt(f.lang, 120), vul: txt(f.vul, 120), res: txt(f.res, 160), imm: txt(f.imm, 160), cimm: txt(f.cimm, 160),
       traits: rows(f.traits), actions: rows(f.actions), legend: rows(f.legend), react: rows(f.react), hb: true,
+      img: typeof f.img === 'string' && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(f.img) && f.img.length < 120000 ? f.img : null,
     };
     if (Object.keys(saves).length) m.saves = saves;
     return m;
