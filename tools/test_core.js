@@ -288,4 +288,24 @@ ok(!fogSt.visible['5,5'] && fogSt.explored['5,5'], 'explored stays after moving 
 eq(Core.tokenVisibleToPlayers({ c: 22, r: 5 }, fogSt), true); eq(Core.tokenVisibleToPlayers({ c: 40, r: 5 }, fogSt), false);
 for (let i = 0; i < 500; i++) Core.stepFog(fogSt, [Object.assign({}, ftok, { c: i % 50 })], fg, [], {});
 ok(fogSt.history.length <= 400, 'history stays bounded');
+
+// ---- rest recovery
+const rr = (cls, lvl) => Core.derive({ cls, level: lvl, race: 'human', base: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 14 } }, R).resources;
+const resetOf = (cls, lvl, key) => rr(cls, lvl).find((x) => x.key === key).reset;
+eq([resetOf('monk', 5, 'ki'), resetOf('fighter', 5, 'second-wind'), resetOf('fighter', 5, 'surge'), resetOf('cleric', 5, 'channel'), resetOf('druid', 5, 'wild-shape')], ['short', 'short', 'short', 'short', 'short']);
+eq([resetOf('barbarian', 5, 'rage'), resetOf('paladin', 5, 'lay-on-hands'), resetOf('sorcerer', 5, 'sorcery'), resetOf('wizard', 5, 'arcane-recovery'), resetOf('paladin', 5, 'divine-sense')], ['long', 'long', 'long', 'long', 'long']);
+eq([resetOf('bard', 4, 'inspiration'), resetOf('bard', 5, 'inspiration')], ['long', 'short'], 'font of inspiration');
+eq(rr('barbarian', 20).find((x) => x.key === 'rage').reset, 'none');
+const trk = [{ key: 'a', n: 'Ki points', max: 5, reset: 'short' }, { key: 'b', n: 'Rage', max: 3, reset: 'long' }, { key: 'c', n: 'Charges', max: 7, reset: 'dawn', regain: '1d6+1' }, { key: 'd', n: 'Luck', max: 3, reset: 'short', regain: '1' }, { key: 'e', n: 'Wish', max: 1, reset: 'never' }];
+const spent = { a: 4, b: 2, c: 6, d: 3, e: 1 };
+let rec = Core.restRecovery(trk, spent, 'short');
+eq(rec.res, { a: 0, d: 2 }, 'short rest: short trackers, partial 1');
+rec = Core.restRecovery(trk, spent, 'long');
+eq(rec.res, { a: 0, b: 0, d: 0 }, 'long rest: short and long trackers, all back');
+rec = Core.restRecovery(trk, spent, 'dawn', () => 4);
+eq(rec.res, { c: 2 }, 'dawn: dice'); ok(/rolled 1d6\+1: 4/.test(rec.lines[0]));
+eq(Core.restRecovery(trk, { c: 1 }, 'dawn', () => 6).res, { c: 0 }, 'never more than was spent');
+eq([Core.cleanRegain('all'), Core.cleanRegain(' 2 '), Core.cleanRegain('1d6+1'), Core.cleanRegain('<x>')], ['', '2', '1d6+1', '']);
+d = Core.derive(Object.assign({}, archer, { customRes: [{ id: 'q', n: 'Arrows of luck', max: 3, reset: 'dawn', regain: '1d3' }] }), R, [{ id: 'm1', name: 'Wand', effects: [{ t: 'resource', name: 'Charges', max: 5, reset: 'short', regain: '2' }] }]);
+eq(d.resources.filter((x) => x.custom || x.feat).map((x) => [x.reset, x.regain]), [['dawn', '1d3'], ['short', '2']]);
 console.log('core tests passed:', n);

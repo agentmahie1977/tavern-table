@@ -322,6 +322,44 @@ const Core = (() => {
     return '';
   }
 
+  /* ------------------------------------------------- rests and refills */
+  const RESETS = ['short', 'long', 'dawn', 'never', 'none'];
+  const RESET_LABEL = { short: 'refills on a short or long rest', long: 'refills on a long rest', dawn: 'refills at dawn', never: 'doesn’t refill (DM refills)', none: 'no limit' };
+  // '' = all back; a number; or dice like 1d6+1
+  function cleanRegain(v) {
+    const t = String(v == null ? '' : v).replace(/\s+/g, '').toLowerCase();
+    if (!t || t === 'all') return '';
+    if (/^\d{1,3}$/.test(t)) return String(Math.min(999, Number(t)));
+    return parseDice(t) ? t : '';
+  }
+  // What a short rest, long rest or dawn brings back. used: {key: spent}. Returns {res: patch, lines: [...]}
+  function restRecovery(resources, used, kind, roller) {
+    const out = {};
+    const lines = [];
+    const rollIt = roller || ((ex) => (roll(ex) || { t: 0 }).t);
+    (resources || []).forEach((r) => {
+      const spent = Math.min(r.max || 0, (used && used[r.key]) || 0);
+      if (!spent) return;
+      const rule = RESETS.includes(r.reset) ? r.reset : 'long';
+      const due = (kind === 'short' && rule === 'short') || (kind === 'long' && (rule === 'short' || rule === 'long')) || (kind === 'dawn' && rule === 'dawn');
+      if (!due) return;
+      // a short-rest tracker comes all the way back on a long rest; otherwise its own amount applies
+      const amount = kind === 'long' && rule === 'short' ? '' : r.regain || '';
+      let back = spent;
+      let how = '';
+      if (/^\d+$/.test(amount)) back = Math.min(spent, Number(amount));
+      else if (amount) {
+        const v = Math.max(0, rollIt(amount));
+        back = Math.min(spent, v);
+        how = ` (rolled ${amount}: ${v})`;
+      }
+      if (!back) return;
+      out[r.key] = spent - back;
+      lines.push(`${r.n.replace(/\s*\(.*\)$/, '')} +${back}${how} → ${r.max - spent + back}/${r.max}`);
+    });
+    return { res: out, lines };
+  }
+
   /* ------------------------------- homebrew classes, spells, monsters */
   // Turn homebrew docs (shared data: check everything) into the same shapes as the SRD data.
   const SCHOOLS = ['Abjuration', 'Conjuration', 'Divination', 'Enchantment', 'Evocation', 'Illusion', 'Necromancy', 'Transmutation'];
@@ -827,29 +865,30 @@ const Core = (() => {
 
     // resources
     const resources = [];
-    const add = (key, n, max) => max > 0 && resources.push({ key, n, max });
-    if (c.cls === 'barbarian') add('rage', 'Rage', cs.rage_count === 9999 ? 99 : cs.rage_count || 0);
-    if (c.cls === 'monk' && level >= 2) add('ki', 'Ki points', cs.ki_points || 0);
-    if (c.cls === 'sorcerer' && level >= 2) add('sorcery', 'Sorcery points', cs.sorcery_points || 0);
-    if (c.cls === 'cleric' && level >= 2) add('channel', 'Channel Divinity', cs.channel_divinity_charges || 0);
-    if (c.cls === 'paladin' && level >= 3) add('channel', 'Channel Divinity', 1);
+    // reset: short (short rest, and all back on a long one), long, dawn, never (DM refills), none (no limit)
+    const add = (key, n, max, reset, regain) => max > 0 && resources.push({ key, n, max, reset: reset || 'long', regain: regain || '' });
+    if (c.cls === 'barbarian') { if (cs.rage_count === 9999) resources.push({ key: 'rage', n: 'Rage', max: 0, reset: 'none' }); else add('rage', 'Rage', cs.rage_count || 0, 'long'); }
+    if (c.cls === 'monk' && level >= 2) add('ki', 'Ki points', cs.ki_points || 0, 'short');
+    if (c.cls === 'sorcerer' && level >= 2) add('sorcery', 'Sorcery points', cs.sorcery_points || 0, 'long');
+    if (c.cls === 'cleric' && level >= 2) add('channel', 'Channel Divinity', cs.channel_divinity_charges || 0, 'short');
+    if (c.cls === 'paladin' && level >= 3) add('channel', 'Channel Divinity', 1, 'short');
     if (c.cls === 'fighter') {
-      add('second-wind', 'Second Wind', 1);
-      if (level >= 2) add('surge', 'Action Surge', cs.action_surges || 1);
-      if (level >= 9) add('indomitable', 'Indomitable', cs.indomitable_uses || 1);
+      add('second-wind', 'Second Wind', 1, 'short');
+      if (level >= 2) add('surge', 'Action Surge', cs.action_surges || 1, 'short');
+      if (level >= 9) add('indomitable', 'Indomitable', cs.indomitable_uses || 1, 'long');
     }
-    if (c.cls === 'bard') add('inspiration', 'Bardic Inspiration (' + (cs.bardic_inspiration_die ? 'd' + cs.bardic_inspiration_die : 'd6') + ')', Math.max(1, mods.cha));
+    if (c.cls === 'bard') add('inspiration', 'Bardic Inspiration (' + (cs.bardic_inspiration_die ? 'd' + cs.bardic_inspiration_die : 'd6') + ')', Math.max(1, mods.cha), level >= 5 ? 'short' : 'long'); // Font of Inspiration at 5
     if (c.cls === 'paladin') {
-      add('lay-on-hands', 'Lay on Hands (HP pool)', 5 * level);
-      add('divine-sense', 'Divine Sense', 1 + Math.max(0, mods.cha));
+      add('lay-on-hands', 'Lay on Hands (HP pool)', 5 * level, 'long');
+      add('divine-sense', 'Divine Sense', 1 + Math.max(0, mods.cha), 'long');
     }
-    if (c.cls === 'druid' && level >= 2) add('wild-shape', 'Wild Shape', 2);
-    if (c.cls === 'wizard') add('arcane-recovery', 'Arcane Recovery', 1);
-    if (breath) add('breath', 'Breath Weapon', 1);
-    for (const r of c.customRes || []) if (r && r.n) resources.push({ key: 'c:' + r.id, n: r.n, max: clamp(parseInt(r.max, 10) || 1, 1, 999), custom: true });
+    if (c.cls === 'druid' && level >= 2) add('wild-shape', 'Wild Shape', level >= 20 ? 0 : 2, 'short');
+    if (c.cls === 'wizard') add('arcane-recovery', 'Arcane Recovery', 1, 'long');
+    if (breath) add('breath', 'Breath Weapon', 1, 'short');
+    for (const r of c.customRes || []) if (r && r.n) resources.push({ key: 'c:' + r.id, n: r.n, max: clamp(parseInt(r.max, 10) || 1, 1, 999), custom: true, reset: RESETS.includes(r.reset) ? r.reset : 'long', regain: cleanRegain(r.regain) });
     fx.filter((e) => e.t === 'resource').forEach((e) => {
       const max = e.max === 'pb' ? pb : ABILS.includes(e.max) ? Math.max(1, mods[e.max]) : int(e.max, 1, 99);
-      resources.push({ key: 'h:' + e.key, n: String(e.name || e.feat).slice(0, 40), max, reset: e.reset === 'short' ? 'short' : 'long', feat: e.feat });
+      resources.push({ key: 'h:' + e.key, n: String(e.name || e.feat).slice(0, 40), max: e.reset === 'none' ? 0 : max, reset: RESETS.includes(e.reset) ? e.reset : 'long', regain: cleanRegain(e.regain), feat: e.feat });
     });
 
     // every usable ability: SRD features, chosen options, homebrew feats/features/items, class actions
@@ -1267,7 +1306,7 @@ const Core = (() => {
     expertiseSlots, derive, encounter, encounterMultiplier, crLabel, inTemplate, templateCorners, templateBBox,
     templateCells, tokenCells, cellsHit, distanceFt, edgePoint, CONE_HALF,
     EFFECT_TYPES, ATTACK_FILTERS, DAMAGE_TYPES, featEffects, describeEffect, cleanDmg,
-    STYLES, LIFE_SPELLS, SRD_USE, optionCount, expandOptions, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
+    RESETS, RESET_LABEL, cleanRegain, restRecovery, STYLES, LIFE_SPELLS, SRD_USE, optionCount, expandOptions, SCHOOLS, SIZES, SHAPES, CR_LIST, CR_XP, scaleExpr, featureLevels, homebrewClass, spellFromHomebrew, monsterFromHomebrew, crValue,
     tokenCenter, visionRadiusPx, wallsNear, raySegmentHit, visibilityPolygon, inPolygon, visibleCells, createFogState, stepFog, tokenVisibleToPlayers,
     _setRng: (f) => { rng = f; },
   };
