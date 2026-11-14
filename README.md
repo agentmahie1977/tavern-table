@@ -21,9 +21,7 @@ only Iran's national network is up. Use your own server below for that.)
 4. Open the address it prints. Friends open the "For friends" address and type the password.
 
 See [HOSTING.md](HOSTING.md) for playing across a home network, from home with a
-public IP, or on a small VPS, including on Iran's national network (نت ملی)
-during filtering.
-
+public IP, or on a small VPS,
 **On claude.ai:** publish `index.html` with the `data/` folder as a Claude artifact
 with the db, room and user capabilities. Friends with a Claude account join as Editors.
 
