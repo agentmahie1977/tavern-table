@@ -1,0 +1,31 @@
+# DOMAIN_PLACEHOLDER is replaced with your domain by deploy/setup.sh.
+# Caddy gets and renews the HTTPS certificate automatically.
+DOMAIN_PLACEHOLDER {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+	}
+
+	# Backups can be big, so restore gets a large upload limit.
+	handle /api/restore {
+		request_body {
+			max_size 320MB
+		}
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else: small bodies only.
+	handle {
+		request_body {
+			max_size 2MB
+		}
+		# flush_interval -1 sends data immediately (needed for server-sent events)
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+		}
+	}
+}
