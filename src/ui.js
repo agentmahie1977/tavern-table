@@ -359,6 +359,16 @@ const UI = (() => {
       const b = e.target.closest('[data-act]');
       if (b && el.contains(b) && def.act) def.act(b.dataset.act, b, e);
     });
+    // Enter in an add-item box acts like its Add button
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing || !e.target.matches || !e.target.matches('.inv-add input')) return;
+      const b = e.target.closest('.inv-add').querySelector('[data-act$="-add"]');
+      if (!b || !def.act) return;
+      e.preventDefault();
+      def.act(b.dataset.act, b, e);
+      panels[id].typing = false;
+      renderPanel(id, true);
+    });
     el.addEventListener('input', (e) => def.input && def.input(e.target, e));
     el.addEventListener('change', (e) => def.change && def.change(e.target, e));
     el.addEventListener('focusin', (e) => {
@@ -476,9 +486,11 @@ const UI = (() => {
     const c = coins || {};
     return html`<div class="coins">${COINS.map(([k, n]) => html`<label class="coin"><span>${k}</span><input type="number" id="${prefix}-${k}" data-coin="${k}" value="${cleanQty(c[k])}" min="0" max="9999" inputmode="numeric" aria-label="${n} pieces" ${edit ? '' : 'readonly'}></label>`)}</div>`;
   }
+  // Common adventuring gear from the SRD 5.1 equipment chapter (names only). Suggestions, not limits: any text can be added.
+  const GEAR_NAMES = ["Abacus", "Acid (vial)", "Alchemist's fire (flask)", "Antitoxin (vial)", "Arrows (20)", "Backpack", "Ball bearings (bag of 1,000)", "Barrel", "Basket", "Bedroll", "Bell", "Blanket", "Block and tackle", "Blowgun needles (50)", "Book", "Bottle (glass)", "Bucket", "Caltrops (bag of 20)", "Candle", "Case (crossbow bolt)", "Case (map or scroll)", "Chain (10 feet)", "Chalk (1 piece)", "Chest", "Climber's kit", "Clothes (common)", "Clothes (costume)", "Clothes (fine)", "Clothes (traveler's)", "Component pouch", "Crossbow bolts (20)", "Crowbar", "Dice set", "Disguise kit", "Dragonchess set", "Druidic focus", "Fishing tackle", "Flask", "Forgery kit", "Grappling hook", "Hammer", "Hammer (sledge)", "Healer's kit", "Herbalism kit", "Holy symbol", "Holy water (flask)", "Hourglass", "Hunting trap", "Ink (1 ounce bottle)", "Ink pen", "Jug", "Ladder (10-foot)", "Lamp", "Lantern (bullseye)", "Lantern (hooded)", "Lock", "Magnifying glass", "Manacles", "Mess kit", "Mirror (steel)", "Navigator's tools", "Oil (flask)", "Paper (one sheet)", "Parchment (one sheet)", "Perfume (vial)", "Pick (miner's)", "Piton", "Playing card set", "Poison (basic vial)", "Poisoner's kit", "Pole (10-foot)", "Pot (iron)", "Potion of healing", "Potion of greater healing", "Potion of superior healing", "Potion of supreme healing", "Pouch", "Quiver", "Ram (portable)", "Rations (1 day)", "Robes", "Rope (hempen", "50 feet)", "Rope (silk", "50 feet)", "Sack", "Scale (merchant's)", "Sealing wax", "Shovel", "Signal whistle", "Signet ring", "Sling bullets (20)", "Soap", "Spellbook", "Spike (iron)", "Spyglass", "Tent (two-person)", "Thieves' tools", "Tinderbox", "Torch", "Vial", "Waterskin", "Whetstone", "Alchemist's supplies", "Brewer's supplies", "Calligrapher's supplies", "Carpenter's tools", "Cartographer's tools", "Cobbler's tools", "Cook's utensils", "Glassblower's tools", "Jeweler's tools", "Leatherworker's tools", "Mason's tools", "Painter's supplies", "Potter's tools", "Smith's tools", "Tinker's tools", "Weaver's tools", "Woodcarver's tools", "Bagpipes", "Drum", "Dulcimer", "Flute", "Lute", "Lyre", "Horn", "Pan flute", "Shawm", "Viol", "Burglar's pack", "Diplomat's pack", "Dungeoneer's pack", "Entertainer's pack", "Explorer's pack", "Priest's pack", "Scholar's pack", "Camel", "Donkey", "Mule", "Draft horse", "Riding horse", "Warhorse", "Pony", "Mastiff", "Elephant", "Saddle (riding)", "Saddle (pack)", "Saddlebags", "Barding", "Carriage", "Cart", "Chariot", "Sled", "Wagon", "Rowboat", "Keelboat", "Sailing ship", "Galley", "Longship", "Warship", "Flour (1 pound)", "Wheat (1 pound)", "Salt (1 pound)", "Iron (1 pound)", "Copper (1 pound)", "Silver (1 pound)", "Gold (1 pound)", "Platinum (1 pound)", "Ginger (1 pound)", "Cinnamon (1 pound)", "Pepper (1 pound)", "Cloves (1 pound)", "Chicken", "Goat", "Pig", "Sheep", "Cow", "Ox", "Linen (1 square yard)", "Cotton cloth (1 square yard)", "Silk (1 square yard)", "Ale (gallon)", "Wine (common", "pitcher)", "Wine (fine", "bottle)", "Meat (chunk)", "Bread (loaf)", "Cheese (hunk)"];
   function itemSuggestions() {
     const R = D.rules;
-    const names = new Set();
+    const names = new Set(GEAR_NAMES);
     if (R) {
       Object.values(R.weapons).forEach((w) => names.add(w.n));
       Object.values(R.armor).forEach((a) => names.add(a.n));
@@ -495,13 +507,14 @@ const UI = (() => {
       <span class="small muted">${titleCase(magic.rarity || 'uncommon')}${it.eq && (!magic.attune || it.at) ? ' · working' : magic.attune && !it.at ? ' · needs attunement' : ''}</span></div>` : '';
     return html`<div class="row inv-row"><span class="main"><span class="title" style="display:block">${nameBit}</span>${it.note ? html`<span class="sub" style="display:block">${it.note}</span>` : ''}</span>
       <div class="stepper"><button type="button" data-act="${scope}-q" data-i="${i}" data-d="-1" aria-label="One fewer" ${edit && cleanQty(it.q) > 0 ? '' : 'disabled'}>−</button><span class="val num">${cleanQty(it.q)}</span><button type="button" data-act="${scope}-q" data-i="${i}" data-d="1" aria-label="One more" ${edit ? '' : 'disabled'}>+</button></div>
-      ${edit ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-move" data-i="${i}">${scope === 'inv' ? 'To party' : 'Take'}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="${scope}-del" data-i="${i}" aria-label="Remove ${it.n || 'item'}">${icon('trash')}</button>` : ''}${toggles}</div>`;
+      ${edit ? html`<button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-edit" data-i="${i}" aria-label="Edit ${it.n || 'item'}">Edit</button><button type="button" class="btn btn-ghost btn-sm" data-act="${scope}-move" data-i="${i}">${scope === 'inv' ? 'To party' : 'Take'}</button><button type="button" class="btn btn-ghost btn-icon btn-sm" data-act="${scope}-del" data-i="${i}" aria-label="Remove ${it.n || 'item'}">${icon('trash')}</button>` : ''}${toggles}</div>`;
   }
   function addItemHtml(scope) {
-    return html`<div class="inv-add"><input type="text" id="${scope}Name" list="itemNames" maxlength="60" placeholder="Add an item: rope, potion, Longsword…" autocomplete="off" aria-label="Item name">
+    return html`<div class="inv-add"><input type="text" id="${scope}Name" list="itemNames" maxlength="60" placeholder="Type any item name…" autocomplete="off" aria-label="Item name">
       <input type="number" id="${scope}Qty" value="1" min="1" max="9999" inputmode="numeric" aria-label="How many" style="width:70px">
       <input type="text" id="${scope}Note" maxlength="120" placeholder="Note (optional)" autocomplete="off" aria-label="Note">
-      <button type="button" class="btn" data-act="${scope}-add">${icon('plus')} Add</button></div>`;
+      <button type="button" class="btn" data-act="${scope}-add">${icon('plus')} Add</button>
+      <p class="hint inv-hint">Suggestions are optional: type anything.</p></div>`;
   }
   function invCardHtml(ch, edit) {
     const inv = Array.isArray(ch.inv) ? ch.inv : [];
@@ -543,6 +556,22 @@ const UI = (() => {
     if (qty) qty.value = '1';
     return it;
   }
+  // small sheet to rename an item and change its note; onSave(name, note)
+  function openItemEdit(it, onSave) {
+    Sheet.open({
+      title: 'Edit item',
+      render: () => html`<form class="form" autocomplete="off"><label class="field"><span>Name</span><input type="text" id="itemEditName" maxlength="60" value="${it.n || ''}"></label>
+        <label class="field"><span>Note</span><input type="text" id="itemEditNote" maxlength="120" value="${it.note || ''}" placeholder="Note (optional)"></label>
+        <div class="btn-row end"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button type="submit" class="btn btn-primary" data-act="item-save">Save</button></div></form>`,
+      submit: () => {
+        const name = String(($('#itemEditName') || {}).value || '').trim().slice(0, 60);
+        if (!name) return toast('An item needs a name.', 'warn');
+        const note = String(($('#itemEditNote') || {}).value || '').trim().slice(0, 120);
+        Sheet.close(true);
+        onSave(name, note);
+      },
+    });
+  }
   // party actions (Heroes list); returns true when handled
   function partyAct(a, b) {
     const items = partyItems();
@@ -555,6 +584,10 @@ const UI = (() => {
       return true;
     }
     if (!it && /^party-/.test(a)) return true;
+    if (a === 'party-edit') {
+      openItemEdit(it, (n, note) => Store.Act.partyPatch(it.id, { n, note }));
+      return true;
+    }
     if (a === 'party-q') {
       const q = cleanQty(it.q) + Number(b.dataset.d);
       if (q <= 0) Store.Act.partyDel(it.id);
@@ -966,6 +999,19 @@ const UI = (() => {
         if (!it) return;
         Store.Act.patchChar(ch.id, { inv: (Array.isArray(ch.inv) ? ch.inv : []).concat([it]) });
         return;
+      }
+      case 'inv-edit': {
+        const i = Number(b.dataset.i);
+        const it = (Array.isArray(ch.inv) ? ch.inv : [])[i];
+        if (!it) return;
+        return openItemEdit(it, (n, note) => {
+          const cur = S.chars.get(ch.id) || ch;
+          const inv = (Array.isArray(cur.inv) ? cur.inv : []).slice();
+          const j = inv.findIndex((x) => x.id === it.id);
+          if (j < 0) return;
+          inv[j] = Object.assign({}, inv[j], { n, note });
+          Store.Act.patchChar(ch.id, { inv });
+        });
       }
       case 'inv-eq':
       case 'inv-at': {

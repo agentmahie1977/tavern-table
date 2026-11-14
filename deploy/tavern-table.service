@@ -1,0 +1,22 @@
+[Unit]
+Description=Tavern Table (virtual tabletop server)
+After=network.target
+
+[Service]
+Type=simple
+User=tavern
+Group=tavern
+WorkingDirectory=/opt/tavern-table
+ExecStart=/usr/bin/node server.js --accounts --trust-proxy --port 8080 --data /var/lib/tavern-table
+Restart=always
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tavern-table
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
