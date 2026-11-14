@@ -25,6 +25,8 @@ const Store = (() => {
     camp: 'main', // current campaign id
     campName: '',
     conn: null, // self-hosted server connection
+    accountsMode: false, // self-hosted server with --accounts: the server signs people in and checks every write
+    authUser: null,
     relay: false, // sending writes through a writer's page
     readOnly: false,
     executorPresent: false,
@@ -335,6 +337,8 @@ const Store = (() => {
     let key = LS.get('tt.key', '') || '';
     let r = await get('?key=' + encodeURIComponent(key));
     if (!r) return null;
+    // a public server with accounts: everyone signs in with their own name and password
+    if (r.j.accounts) return { key: '', accounts: true, user: r.j.user || (await signInScreen(r.j)) };
     while (r && r.status === 401) {
       const typed = window.prompt(key ? 'That password didn’t work. Table password:' : 'Table password:');
       if (typed == null) return { refused: true };
@@ -344,6 +348,85 @@ const Store = (() => {
     if (!r) return null;
     LS.set('tt.key', key);
     return { key };
+  }
+  // the sign-in / create-account screen, shown before the table loads (accounts mode only)
+  function signInScreen(hello) {
+    return new Promise((resolve) => {
+      let mode = hello.fresh ? 'create' : 'signin';
+      let busy = false;
+      const box = document.createElement('div');
+      box.id = 'signin';
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-labelledby', 'siTitle');
+      box.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;background:var(--bg,#16130f);color:var(--ink,#eee)';
+      box.innerHTML = `<form class="card" id="siForm" style="width:100%;max-width:380px;margin:auto" novalidate>
+        <div class="card-title"><h3 id="siTitle">Tavern Table</h3></div>
+        <div class="seg full" style="margin-bottom:12px"><button type="button" data-m="signin">Sign in</button><button type="button" data-m="create">Create account</button></div>
+        <p class="hint" id="siHint" style="margin-top:0"></p>
+        <label class="field"><span>Name</span><input type="text" id="siName" maxlength="40" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field"><span>Password</span><input type="password" id="siPass" autocomplete="current-password" required></label>
+        <label class="field" id="siPass2Row"><span>Password again</span><input type="password" id="siPass2" autocomplete="new-password"></label>
+        <p class="err" id="siErr" role="alert" style="min-height:1.2em;margin:4px 0"></p>
+        <div class="btn-row end"><button type="submit" class="btn btn-primary" id="siGo"></button></div>
+      </form>`;
+      document.body.appendChild(box);
+      const $ = (id) => box.querySelector('#' + id);
+      const draw = () => {
+        const create = mode === 'create';
+        box.querySelectorAll('[data-m]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.m === mode)));
+        $('siPass2Row').hidden = !create;
+        $('siPass').setAttribute('autocomplete', create ? 'new-password' : 'current-password');
+        $('siGo').textContent = busy ? 'One moment…' : create ? 'Create account' : 'Sign in';
+        $('siGo').disabled = busy;
+        $('siHint').textContent = create
+          ? hello.fresh ? 'You’re the first one here: your account owns this table and is the DM.' : 'Pick a name your friends will recognise and a password of at least 8 characters.'
+          : 'Sign in with your name and password. You stay signed in on this device.';
+      };
+      const err = (m) => ($('siErr').textContent = m || '');
+      box.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-m]');
+        if (!b || busy) return;
+        mode = b.dataset.m;
+        err('');
+        draw();
+      });
+      $('siForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        const name = $('siName').value.trim();
+        const password = $('siPass').value;
+        if (name.length < 2) return err('Type your name (at least 2 characters).');
+        if (mode === 'create' && password.length < 8) return err('The password needs at least 8 characters.');
+        if (mode === 'create' && password !== $('siPass2').value) return err('The two passwords aren’t the same.');
+        if (!password) return err('Type your password.');
+        busy = true;
+        err('');
+        draw();
+        let r = null;
+        let j = {};
+        try {
+          r = await fetch(mode === 'create' ? 'api/register' : 'api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, password }), credentials: 'same-origin' });
+          j = await r.json().catch(() => ({}));
+        } catch (er) { /* offline */ }
+        busy = false;
+        if (r && r.ok && j.user) {
+          box.remove();
+          return resolve(j.user);
+        }
+        draw();
+        err(!r ? 'The table can’t be reached. Check your connection and try again.' : j.message || 'That didn’t work. Try again.');
+      });
+      draw();
+      setTimeout(() => $('siName').focus(), 30);
+    });
+  }
+  // the session ended (signed out elsewhere, or the password was reset): back to the sign-in screen
+  let signedOutOnce = false;
+  function signedOut() {
+    if (signedOutOnce) return;
+    signedOutOnce = true;
+    location.reload();
   }
   function serverConn(key, cid) {
     const q = '?key=' + encodeURIComponent(key || '') + '&c=' + encodeURIComponent(cid || 'main');
@@ -374,7 +457,13 @@ const Store = (() => {
     });
     on('doc', (m) => conn.onDoc && conn.onDoc(m));
     on('peers', (m) => conn.onPeers && conn.onPeers(m.peers || []));
+    let lastCheck = 0;
     es.onerror = () => {
+      // with accounts, a stream that fails may mean the session ended
+      if (conn.accounts && Date.now() - lastCheck > 3000) {
+        lastCheck = Date.now();
+        fetch('api/me', { cache: 'no-store' }).then((r) => r.status === 401 && signedOut()).catch(() => {});
+      }
       if (!conn.live) return;
       conn.live = false;
       if (conn.onState) conn.onState(false);
@@ -387,7 +476,8 @@ const Store = (() => {
         throw { code: 'unavailable', message: 'server unreachable' };
       }
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw { code: j.code || (r.status === 401 ? 'revoked' : r.status === 413 ? 'quota_exceeded' : 'unavailable'), message: j.message || 'HTTP ' + r.status };
+      if (r.status === 401 && conn.accounts) signedOut();
+      if (!r.ok) throw { code: j.code || (r.status === 401 ? 'revoked' : r.status === 403 ? 'permission_denied' : r.status === 413 ? 'quota_exceeded' : 'unavailable'), message: j.message || 'HTTP ' + r.status };
       return j;
     };
     conn.getJson = async (url) => {
@@ -397,7 +487,8 @@ const Store = (() => {
       } catch (e) {
         throw { code: 'unavailable' };
       }
-      if (!r.ok) throw { code: 'unavailable', message: 'HTTP ' + r.status };
+      if (r.status === 401 && conn.accounts) signedOut();
+      if (!r.ok) throw { code: r.status === 403 ? 'permission_denied' : 'unavailable', message: r.status === 403 ? 'You don’t have permission to do that.' : 'HTTP ' + r.status };
       return r.json();
     };
     return conn;
@@ -937,6 +1028,13 @@ const Store = (() => {
   function writeFailed(e, path, op) {
     const code = e && e.code;
     console.warn('write failed', path, e);
+    if (code === 'permission_denied') {
+      // the server said no (accounts mode): never relay this, just tell them and undo any local preview
+      toastWarn('You don’t have permission to do that.');
+      emit('denied', path);
+      return false;
+    }
+    if (code === 'signed_out') return false;
     if ((code === 'invalid_argument' || code === 'not_granted') && S.canWrite !== true && sizeOf(op) < 200000) {
       enterRelay();
       return relaySend(path, op);
@@ -1573,6 +1671,7 @@ const Store = (() => {
         if (S.camp !== 'main' && !(r.campaigns || []).some((c) => c.id === S.camp)) S.camp = 'main';
       } catch (e) { /* keep the choice */ }
       const conn = serverConn(found.key, S.camp);
+      conn.accounts = !!found.accounts;
       S.conn = conn;
       await Promise.race([conn.firstHello, sleep(6000)]);
       conn.onState = (live) => {
@@ -1585,6 +1684,12 @@ const Store = (() => {
       S.room = serverRoom(conn);
       // the computer running the server is the table's owner (DM by default)
       me = { id: null, isOwner: conn.owner, canEdit: true, name: '' };
+      if (found.accounts) {
+        // accounts mode: the server knows who this is, what they may do, and who owns the table
+        S.accountsMode = true;
+        S.authUser = found.user;
+        me = { id: found.user.id, isOwner: !!found.user.admin, canEdit: true, name: found.user.name };
+      }
     } else if (!cl && !opts.forceLocal && joinCodeFromUrl()) {
       // a friend opened a join link: play at the host's table
       const code = joinCodeFromUrl();
@@ -1655,7 +1760,7 @@ const Store = (() => {
       }
     }
     // signed in: the account id is who this person is, on every device
-    const acct = LS.get('tt.acct', null);
+    const acct = S.accountsMode ? pk : LS.get('tt.acct', null);
     if (typeof acct === 'string' && /^[A-Za-z0-9_.:@+-]{1,80}$/.test(acct)) pk = acct;
     S.me = {
       acct: typeof acct === 'string' ? acct : null,
@@ -1670,6 +1775,13 @@ const Store = (() => {
     const role = LS.get('tt.role', null);
     S.dm = role ? role === 'dm' : S.me.isOwner || S.mode === 'local';
     S.myChar = LS.get('tt.char', null);
+    if (S.accountsMode) {
+      // nothing from whoever used this device before: the account decides (its profile follows once loaded)
+      S.me.nick = S.authUser.name;
+      S.me.color = colorFor(pk);
+      S.dm = !!S.authUser.dm;
+      S.myChar = null;
+    }
     if (S.server || S.p2p) S.canWrite = true; // everyone at a self-hosted or online table can play
     else if (S.mode === 'remote') {
       let cw = null;
@@ -1758,6 +1870,10 @@ const Store = (() => {
     return true;
   }
   function signOut() {
+    if (S.accountsMode && S.conn) {
+      ['tt.nick', 'tt.char', 'tt.role', 'tt.color'].forEach((k) => LS.set(k, null));
+      return S.conn.post('api/logout', {}).catch(() => {});
+    }
     LS.set('tt.acct', null);
     LS.set('tt.pk', uid('p')); // signed out: not the owner of anyone's heroes
     ['tt.nick', 'tt.char', 'tt.role'].forEach((k) => LS.set(k, null));
@@ -1766,6 +1882,18 @@ const Store = (() => {
     if (!PIN_RE.test(String(pin))) return Promise.reject(new Error('The PIN must be 4 to 6 digits.'));
     const salt = uid('s');
     return W.upd('accounts/' + id, { salt, hash: hashPin(String(pin), salt) });
+  }
+  // accounts mode: the table owner resets passwords and decides who is a DM (the server checks)
+  function adminResetPassword(id, password) {
+    if (String(password || '').length < 8) return Promise.reject(new Error('The password needs at least 8 characters.'));
+    return S.conn.post('api/admin/reset-password', { userId: id, password: String(password) }).catch((e) => {
+      throw new Error(e.message || 'That didn’t work.');
+    });
+  }
+  function adminSetDm(id, dm) {
+    return S.conn.post('api/admin/set-dm', { userId: id, dm: !!dm }).catch((e) => {
+      throw new Error(e.message || 'That didn’t work.');
+    });
   }
   function saveToAccount(patch) {
     if (!S.me.acct || !S.accounts.has(S.me.acct) || S.readOnly) return;
@@ -2064,7 +2192,7 @@ const Store = (() => {
       location.reload();
     },
     // accounts
-    createAccount, signIn, signOut, resetPin, accountName: (id) => ((S.accounts.get(id) || {}).name || ''),
+    createAccount, signIn, signOut, resetPin, adminResetPassword, adminSetDm, accountName: (id) => ((S.accounts.get(id) || {}).name || ''),
     monImg: (id) => {
       const a = id && S.art.get(id);
       if (a && a.img) return a.img;
@@ -2079,6 +2207,7 @@ const Store = (() => {
     // keeps ?broker=… so friends use the same lobby as the host
     inviteLink: () => (S.p2p ? location.origin + location.pathname + location.search + '#join=' + S.p2p.code : ''),
     setRole(dm) {
+      if (S.accountsMode) return; // the table owner decides who is a DM
       S.dm = !!dm;
       LS.set('tt.role', dm ? 'dm' : 'player');
       saveToAccount({ dm: dm ? 1 : 0 });

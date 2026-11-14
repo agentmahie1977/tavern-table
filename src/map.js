@@ -122,6 +122,13 @@ const Board = (() => {
       applyScene();
     });
     Store.on('maps', applyScene);
+    // the server refused a move: the token goes back where it is
+    Store.on('denied', (p) => {
+      if (typeof p === 'string' && p.startsWith('tokens/')) {
+        pendingMoves.delete(p.slice(7));
+        renderTokens();
+      }
+    });
     Store.on('tokens', () => {
       if (sel && !S.tokens.has(sel)) sel = null;
       renderTokens();

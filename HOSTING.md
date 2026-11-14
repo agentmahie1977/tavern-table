@@ -78,3 +78,29 @@ provider's firewall if it has one.
   isn't reachable during filtering.
 - **The same files still work on claude.ai.** Inside a Claude artifact the page uses
   Claude's shared storage instead of this server.
+
+## Public server with accounts (VPS + HTTPS)
+
+For a server on the open internet, use accounts instead of one shared password:
+
+```
+node server.js --accounts --trust-proxy --host 127.0.0.1 --port 8080
+```
+
+- Everyone opens the address and **creates an account** (name + password of at least
+  8 characters). They stay signed in on that device for 60 days.
+- The **first account made is the table owner and a DM**: make yours before you share
+  the address. In People and settings the owner can reset anyone's password and make
+  people DMs or players.
+- The server checks every change: players edit only their own heroes, tokens, templates,
+  homebrew and dice rolls; scenes, maps, encounters, monster pictures, combat and the
+  shown scene belong to DMs; backup and restore belong to the owner.
+- Passwords are kept as scrypt hashes in `table-data/users.json` (with the sign-in
+  sessions). It never leaves the server; keep it out of shared copies of the folder.
+- Put an HTTPS reverse proxy (Caddy, nginx) in front and forward to `127.0.0.1:8080`.
+  `--trust-proxy` makes the server read the visitor's address and https from the
+  proxy's `X-Forwarded-For` / `X-Forwarded-Proto` headers, so only use it behind a proxy
+  that sets them. Turn off response buffering for `/api/events` (live updates), e.g.
+  nginx `proxy_buffering off;`. Caddy: `reverse_proxy 127.0.0.1:8080` is enough.
+- Anyone who finds the address can create a (player) account, so share it only with
+  your group. Sign-in attempts are limited to 10 per 5 minutes per address.

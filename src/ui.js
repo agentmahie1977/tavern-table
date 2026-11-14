@@ -3591,12 +3591,12 @@ const UI = (() => {
           seen.add(k);
           people.push(p);
         });
-        const me = S.me.acct && S.accounts.get(S.me.acct);
+        const me = (S.me.acct && S.accounts.get(S.me.acct)) || (S.accountsMode ? { name: S.me.nick } : null);
         return html`<div class="card"><div class="card-title"><h3>Account</h3>${me ? html`<button type="button" class="btn btn-sm" data-act="signout">Sign out</button>` : html`<button type="button" class="btn btn-sm btn-primary" data-act="account">Sign in or create</button>`}</div>
-          <p class="prose" style="margin:0">${me ? html`Signed in as <b>${me.name}</b>. Your settings and heroes follow you to any device.` : 'Not signed in: settings stay on this device only.'}</p>
-          ${S.dm && S.accounts.size ? html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${[...S.accounts.entries()].map(([id, a]) => html`<div class="row"><span class="main"><span class="title" style="display:block">${a.name}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
+          <p class="prose" style="margin:0">${me ? html`Signed in as <b>${me.name}</b>. Your settings and heroes follow you to any device.${S.accountsMode ? ' Your name and color here are what others see; you sign in with the name you registered.' : ''}` : 'Not signed in: settings stay on this device only.'}</p>
+          ${S.accountsMode ? (S.me.isOwner ? accountsAdminHtml() : '') : S.dm && S.accounts.size ? html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${[...S.accounts.entries()].map(([id, a]) => html`<div class="row"><span class="main"><span class="title" style="display:block">${a.name}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
             <input type="password" id="rp-${id}" inputmode="numeric" maxlength="6" placeholder="New PIN" aria-label="New PIN for ${a.name}" style="width:110px"><button type="button" class="btn btn-sm" data-act="reset-pin" data-id="${id}">Reset PIN</button></div>`)}</div></div></details>` : ''}</div>
-          ${S.dm || S.mode === 'local' || (S.p2p && S.p2p.role === 'host') ? html`<div class="card"><div class="card-title"><h3>Backup</h3></div>
+          ${(S.accountsMode ? S.me.isOwner : S.dm || S.mode === 'local' || (S.p2p && S.p2p.role === 'host')) ? html`<div class="card"><div class="card-title"><h3>Backup</h3></div>
             <p class="hint">One file with the whole table: accounts, heroes, inventories, homebrew, campaigns, maps, tokens, fog and the dice log. Restore it here or on another device.</p>
             <div class="btn-row"><button type="button" class="btn btn-sm" data-act="backup">Download backup</button><button type="button" class="btn btn-sm" data-act="restore">Restore backup</button></div></div>` : ''}
           <div class="card"><div class="card-title"><h3>Campaign</h3>${S.p2p && S.p2p.role === 'guest' ? '' : html`<button type="button" class="btn btn-sm" data-act="campaigns">${icon('book')} Switch or start another</button>`}</div>
@@ -3604,7 +3604,7 @@ const UI = (() => {
           <div class="card"><div class="card-title"><h3>You</h3>${S.me.isOwner ? html`<span class="badge brass">Table owner</span>` : ''}</div>
           <label class="field"><span>Your name at the table</span><input type="text" id="pNick" value="${S.me.nick}" maxlength="40" placeholder="What friends call you" autocomplete="off"></label>
           <div class="field"><span>Your color</span><div class="swatches">${Store.PALETTE.map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="pcol" data-c="${col}" aria-pressed="${S.me.color === col}" aria-label="Color ${col}"></button>`)}</div></div>
-          <div class="field"><span>Role on this device</span><div class="seg"><button type="button" data-act="role" data-r="player" aria-pressed="${!S.dm}">Player</button><button type="button" data-act="role" data-r="dm" aria-pressed="${S.dm}">Dungeon Master</button></div></div>
+          ${S.accountsMode ? html`<div class="field"><span>Role</span><p class="prose" style="margin:0">${S.dm ? 'Dungeon Master' : 'Player'} <span class="small muted">· the table owner decides who is a DM</span></p></div>` : html`<div class="field"><span>Role on this device</span><div class="seg"><button type="button" data-act="role" data-r="player" aria-pressed="${!S.dm}">Player</button><button type="button" data-act="role" data-r="dm" aria-pressed="${S.dm}">Dungeon Master</button></div></div>`}
           ${mine.length ? html`<label class="field"><span>Playing as</span><select id="pChar"><option value="">Nobody yet</option>${mine.map((c) => html`<option value="${c.id}" ${S.myChar === c.id ? 'selected' : ''}>${c.name}</option>`)}</select></label>` : ''}
           <button type="button" class="chip" data-act="names" aria-pressed="${!!showNames}">${showNames ? 'Token names always shown' : 'Token names on hover'}</button></div>
           <div class="card"><div class="card-title"><h3>At the table now</h3><span class="small muted">${people.length}</span></div>
@@ -3615,9 +3615,9 @@ const UI = (() => {
             })}</div>` : html`<p class="hint">${S.mode === 'local' ? 'Solo mode: this table is only on this device. Use Play online below to bring friends in.' : 'Only you for now.'}</p>`}</div>
           ${onlineCard()}
           ${S.p2p || S.mode === 'local' ? '' : S.server ? html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
-            <p class="prose">Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.</p>
+            <p class="prose">${S.accountsMode ? 'Send friends this address. Each friend creates their own account with a name and password; players move their own heroes and tokens, and the table owner decides who is a DM.' : 'Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.'}</p>
             <input type="text" readonly value="${location.origin + location.pathname}" aria-label="Table address" onfocus="this.select()">
-            <p class="hint">${S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
+            <p class="hint">${S.accountsMode ? 'Anyone who can open this address can create an account, so only share it with your group.' : S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
             <p class="prose">Share this page from its share menu with each friend’s email and give them edit access (Editor), so they can move tokens and roll. Keep the public link off, since edit access for invited friends only holds while the page isn’t shared by link. Each friend signs in with their own Claude account.</p>
             <p class="hint">Friends with view-only access can still watch the table live. While your page is open, their own moves and rolls are passed through it when possible.</p></div>`}
           ${S.dm ? html`<div class="card"><div class="card-title"><h3>DM tools</h3></div><div class="btn-row"><button type="button" class="btn btn-sm" data-act="scenes">${icon('map')} Scenes and maps</button><button type="button" class="btn btn-danger btn-sm" data-act="clear-log">Clear dice log</button></div></div>` : ''}
@@ -3640,10 +3640,15 @@ const UI = (() => {
         if (a === 'scenes') return openScenes();
         if (a === 'campaigns') return openCampaigns();
         if (a === 'account') return openAccount();
-        if (a === 'signout') {
-          Store.signOut();
-          return location.reload();
+        if (a === 'signout') return Promise.resolve(Store.signOut()).then(() => location.reload());
+        if (a === 'reset-pw') {
+          const inp = document.getElementById('rp-' + b.dataset.id);
+          return Store.adminResetPassword(b.dataset.id, inp && inp.value).then(() => {
+            if (inp) inp.value = '';
+            toast('Password reset. Tell them the new one.');
+          }).catch((er) => toast(er.message, 'warn'));
         }
+        if (a === 'set-dm') return Store.adminSetDm(b.dataset.id, b.dataset.dm === '1').then(() => toast(b.dataset.dm === '1' ? 'They’re a DM now.' : 'They’re a player now.')).catch((er) => toast(er.message, 'warn'));
         if (a === 'reset-pin') {
           const inp = document.getElementById('rp-' + b.dataset.id);
           return Store.resetPin(b.dataset.id, inp && inp.value).then(() => toast('PIN reset. Tell them the new one.')).catch((er) => toast(er.message, 'warn'));
@@ -3685,6 +3690,14 @@ const UI = (() => {
     });
   }
   let showNames = Store.LS.get('tt.names', false);
+  // accounts mode: the table owner's list of accounts (passwords and DM rights live on the server)
+  function accountsAdminHtml() {
+    if (!S.accounts.size) return '';
+    const list = [...S.accounts.entries()].sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
+    return html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${list.map(([id, a]) => html`<div class="row" style="flex-wrap:wrap"><span class="main"><span class="title" style="display:block">${a.name}${id === S.me.acct ? ' (you)' : ''}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
+      <button type="button" class="btn btn-sm" data-act="set-dm" data-id="${id}" data-dm="${a.dm ? '0' : '1'}">${a.dm ? 'Make player' : 'Make DM'}</button>
+      <input type="password" id="rp-${id}" minlength="8" maxlength="200" autocomplete="new-password" placeholder="New password" aria-label="New password for ${a.name}" style="width:140px"><button type="button" class="btn btn-sm" data-act="reset-pw" data-id="${id}">Reset password</button></div>`)}</div></div></details>`;
+  }
 
   function openAccount() {
     const st = { err: '', busy: false, pick: '' };
@@ -3849,6 +3862,7 @@ const UI = (() => {
     renderTop();
     renderTabs();
     // everyone signs in once per device (automated test browsers skip this unless the address has ?acct)
+    if (S.accountsMode) return; // signed in on the server already, with a name
     const testSkip = navigator.webdriver && !/[?&]acct\b/.test(location.search);
     const wantAcct = () => S.loaded && !S.me.acct && !testSkip;
     if (wantAcct()) setTimeout(openAccount, 300);

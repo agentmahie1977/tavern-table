@@ -144,7 +144,7 @@ h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
 
 .field { display: grid; gap: 5px; min-width: 0; }
 .field > span, .label { font-size: 12px; color: var(--ink-3); letter-spacing: 0.04em; text-transform: uppercase; }
-input[type="text"], input[type="number"], input[type="search"], select, textarea {
+input[type="text"], input[type="number"], input[type="search"], input[type="password"], select, textarea {
   width: 100%; min-height: 40px; padding: 8px 10px; border-radius: 8px;
   background: var(--felt-deep); border: 1px solid var(--line-2); color: var(--ink); font-size: 16px;
 }

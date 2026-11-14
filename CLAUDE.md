@@ -26,6 +26,9 @@ ratings, initiative tracking, and a shared dice log.
   keeps the shared documents in `table-data/` (map pieces as files), pushes changes and presence over
   server-sent events. `store.js` detects it (`api/hello`) when not inside claude.ai, so one build runs
   in three modes: claude.ai capabilities, self-hosted server, or solo. See `HOSTING.md`.
+  `--accounts` (public VPS behind HTTPS, with `--trust-proxy`): server-side accounts (scrypt, `users.json`,
+  `tt_session` cookie), the first account is owner/admin + DM, and `applyWrite(t, op, user)` enforces
+  per-collection permissions (`allowed()`); the client shows `signInScreen()` before boot (`S.accountsMode`).
 - `vendor/peerjs.min.js` — PeerJS (MIT) for online play: the host's browser runs a hub over its solo
   storage (`makeHub`), guests join with `#join=<room>` links; both reuse `serverBackend`/`serverRoom`.
   `?broker=host:port/path&broker_secure=0` picks a different PeerJS broker (tests use a local one).
@@ -34,6 +37,8 @@ ratings, initiative tracking, and a shared dice log.
 - `tools/`
   - `build.py` — concatenates `src/*` into `index.html`.
   - `test_core.js` — Node unit tests for `core.js` (run: `node tools/test_core.js`).
+  - `test_server.js` — server.js accounts mode and permissions (run: `node tools/test_server.js`).
+  - `check_accounts.js` — Playwright (Node) check of two people at an `--accounts` server.
   - `check.py` — Playwright end-to-end check: phone solo flow plus three simulated people at
     one table, using `mock_claude.js` as a stand-in for `window.claude`.
   - `prep_srd.py` — regenerates `data/` from the 5e-bits/5e-database repo
@@ -93,4 +98,6 @@ python3 -m http.server          # then open http://localhost:8000/test.html (sol
   People and settings; the owner defaults to DM).
 - Optional SRD 5.2 (2024 rules) dataset.
 - Fog of war.
-- Self-hosted mode has one shared password and no per-person roles; anyone with it can edit.
+- Self-hosted password mode has one shared password and no per-person roles; anyone with it can edit
+  (use `--accounts` for per-person permissions). Accounts mode doesn't limit reads yet: every signed-in
+  person receives every document (hidden monsters, encounters).

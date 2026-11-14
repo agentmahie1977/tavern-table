@@ -151,7 +151,7 @@ h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
 
 .field { display: grid; gap: 5px; min-width: 0; }
 .field > span, .label { font-size: 12px; color: var(--ink-3); letter-spacing: 0.04em; text-transform: uppercase; }
-input[type="text"], input[type="number"], input[type="search"], select, textarea {
+input[type="text"], input[type="number"], input[type="search"], input[type="password"], select, textarea {
   width: 100%; min-height: 40px; padding: 8px 10px; border-radius: 8px;
   background: var(--felt-deep); border: 1px solid var(--line-2); color: var(--ink); font-size: 16px;
 }
@@ -1956,6 +1956,8 @@ const Store = (() => {
     camp: 'main', // current campaign id
     campName: '',
     conn: null, // self-hosted server connection
+    accountsMode: false, // self-hosted server with --accounts: the server signs people in and checks every write
+    authUser: null,
     relay: false, // sending writes through a writer's page
     readOnly: false,
     executorPresent: false,
@@ -2266,6 +2268,8 @@ const Store = (() => {
     let key = LS.get('tt.key', '') || '';
     let r = await get('?key=' + encodeURIComponent(key));
     if (!r) return null;
+    // a public server with accounts: everyone signs in with their own name and password
+    if (r.j.accounts) return { key: '', accounts: true, user: r.j.user || (await signInScreen(r.j)) };
     while (r && r.status === 401) {
       const typed = window.prompt(key ? 'That password didn’t work. Table password:' : 'Table password:');
       if (typed == null) return { refused: true };
@@ -2275,6 +2279,85 @@ const Store = (() => {
     if (!r) return null;
     LS.set('tt.key', key);
     return { key };
+  }
+  // the sign-in / create-account screen, shown before the table loads (accounts mode only)
+  function signInScreen(hello) {
+    return new Promise((resolve) => {
+      let mode = hello.fresh ? 'create' : 'signin';
+      let busy = false;
+      const box = document.createElement('div');
+      box.id = 'signin';
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-labelledby', 'siTitle');
+      box.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;background:var(--bg,#16130f);color:var(--ink,#eee)';
+      box.innerHTML = `<form class="card" id="siForm" style="width:100%;max-width:380px;margin:auto" novalidate>
+        <div class="card-title"><h3 id="siTitle">Tavern Table</h3></div>
+        <div class="seg full" style="margin-bottom:12px"><button type="button" data-m="signin">Sign in</button><button type="button" data-m="create">Create account</button></div>
+        <p class="hint" id="siHint" style="margin-top:0"></p>
+        <label class="field"><span>Name</span><input type="text" id="siName" maxlength="40" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+        <label class="field"><span>Password</span><input type="password" id="siPass" autocomplete="current-password" required></label>
+        <label class="field" id="siPass2Row"><span>Password again</span><input type="password" id="siPass2" autocomplete="new-password"></label>
+        <p class="err" id="siErr" role="alert" style="min-height:1.2em;margin:4px 0"></p>
+        <div class="btn-row end"><button type="submit" class="btn btn-primary" id="siGo"></button></div>
+      </form>`;
+      document.body.appendChild(box);
+      const $ = (id) => box.querySelector('#' + id);
+      const draw = () => {
+        const create = mode === 'create';
+        box.querySelectorAll('[data-m]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.m === mode)));
+        $('siPass2Row').hidden = !create;
+        $('siPass').setAttribute('autocomplete', create ? 'new-password' : 'current-password');
+        $('siGo').textContent = busy ? 'One moment…' : create ? 'Create account' : 'Sign in';
+        $('siGo').disabled = busy;
+        $('siHint').textContent = create
+          ? hello.fresh ? 'You’re the first one here: your account owns this table and is the DM.' : 'Pick a name your friends will recognise and a password of at least 8 characters.'
+          : 'Sign in with your name and password. You stay signed in on this device.';
+      };
+      const err = (m) => ($('siErr').textContent = m || '');
+      box.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-m]');
+        if (!b || busy) return;
+        mode = b.dataset.m;
+        err('');
+        draw();
+      });
+      $('siForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        const name = $('siName').value.trim();
+        const password = $('siPass').value;
+        if (name.length < 2) return err('Type your name (at least 2 characters).');
+        if (mode === 'create' && password.length < 8) return err('The password needs at least 8 characters.');
+        if (mode === 'create' && password !== $('siPass2').value) return err('The two passwords aren’t the same.');
+        if (!password) return err('Type your password.');
+        busy = true;
+        err('');
+        draw();
+        let r = null;
+        let j = {};
+        try {
+          r = await fetch(mode === 'create' ? 'api/register' : 'api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, password }), credentials: 'same-origin' });
+          j = await r.json().catch(() => ({}));
+        } catch (er) { /* offline */ }
+        busy = false;
+        if (r && r.ok && j.user) {
+          box.remove();
+          return resolve(j.user);
+        }
+        draw();
+        err(!r ? 'The table can’t be reached. Check your connection and try again.' : j.message || 'That didn’t work. Try again.');
+      });
+      draw();
+      setTimeout(() => $('siName').focus(), 30);
+    });
+  }
+  // the session ended (signed out elsewhere, or the password was reset): back to the sign-in screen
+  let signedOutOnce = false;
+  function signedOut() {
+    if (signedOutOnce) return;
+    signedOutOnce = true;
+    location.reload();
   }
   function serverConn(key, cid) {
     const q = '?key=' + encodeURIComponent(key || '') + '&c=' + encodeURIComponent(cid || 'main');
@@ -2305,7 +2388,13 @@ const Store = (() => {
     });
     on('doc', (m) => conn.onDoc && conn.onDoc(m));
     on('peers', (m) => conn.onPeers && conn.onPeers(m.peers || []));
+    let lastCheck = 0;
     es.onerror = () => {
+      // with accounts, a stream that fails may mean the session ended
+      if (conn.accounts && Date.now() - lastCheck > 3000) {
+        lastCheck = Date.now();
+        fetch('api/me', { cache: 'no-store' }).then((r) => r.status === 401 && signedOut()).catch(() => {});
+      }
       if (!conn.live) return;
       conn.live = false;
       if (conn.onState) conn.onState(false);
@@ -2318,7 +2407,8 @@ const Store = (() => {
         throw { code: 'unavailable', message: 'server unreachable' };
       }
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw { code: j.code || (r.status === 401 ? 'revoked' : r.status === 413 ? 'quota_exceeded' : 'unavailable'), message: j.message || 'HTTP ' + r.status };
+      if (r.status === 401 && conn.accounts) signedOut();
+      if (!r.ok) throw { code: j.code || (r.status === 401 ? 'revoked' : r.status === 403 ? 'permission_denied' : r.status === 413 ? 'quota_exceeded' : 'unavailable'), message: j.message || 'HTTP ' + r.status };
       return j;
     };
     conn.getJson = async (url) => {
@@ -2328,7 +2418,8 @@ const Store = (() => {
       } catch (e) {
         throw { code: 'unavailable' };
       }
-      if (!r.ok) throw { code: 'unavailable', message: 'HTTP ' + r.status };
+      if (r.status === 401 && conn.accounts) signedOut();
+      if (!r.ok) throw { code: r.status === 403 ? 'permission_denied' : 'unavailable', message: r.status === 403 ? 'You don’t have permission to do that.' : 'HTTP ' + r.status };
       return r.json();
     };
     return conn;
@@ -2868,6 +2959,13 @@ const Store = (() => {
   function writeFailed(e, path, op) {
     const code = e && e.code;
     console.warn('write failed', path, e);
+    if (code === 'permission_denied') {
+      // the server said no (accounts mode): never relay this, just tell them and undo any local preview
+      toastWarn('You don’t have permission to do that.');
+      emit('denied', path);
+      return false;
+    }
+    if (code === 'signed_out') return false;
     if ((code === 'invalid_argument' || code === 'not_granted') && S.canWrite !== true && sizeOf(op) < 200000) {
       enterRelay();
       return relaySend(path, op);
@@ -3504,6 +3602,7 @@ const Store = (() => {
         if (S.camp !== 'main' && !(r.campaigns || []).some((c) => c.id === S.camp)) S.camp = 'main';
       } catch (e) { /* keep the choice */ }
       const conn = serverConn(found.key, S.camp);
+      conn.accounts = !!found.accounts;
       S.conn = conn;
       await Promise.race([conn.firstHello, sleep(6000)]);
       conn.onState = (live) => {
@@ -3516,6 +3615,12 @@ const Store = (() => {
       S.room = serverRoom(conn);
       // the computer running the server is the table's owner (DM by default)
       me = { id: null, isOwner: conn.owner, canEdit: true, name: '' };
+      if (found.accounts) {
+        // accounts mode: the server knows who this is, what they may do, and who owns the table
+        S.accountsMode = true;
+        S.authUser = found.user;
+        me = { id: found.user.id, isOwner: !!found.user.admin, canEdit: true, name: found.user.name };
+      }
     } else if (!cl && !opts.forceLocal && joinCodeFromUrl()) {
       // a friend opened a join link: play at the host's table
       const code = joinCodeFromUrl();
@@ -3586,7 +3691,7 @@ const Store = (() => {
       }
     }
     // signed in: the account id is who this person is, on every device
-    const acct = LS.get('tt.acct', null);
+    const acct = S.accountsMode ? pk : LS.get('tt.acct', null);
     if (typeof acct === 'string' && /^[A-Za-z0-9_.:@+-]{1,80}$/.test(acct)) pk = acct;
     S.me = {
       acct: typeof acct === 'string' ? acct : null,
@@ -3601,6 +3706,13 @@ const Store = (() => {
     const role = LS.get('tt.role', null);
     S.dm = role ? role === 'dm' : S.me.isOwner || S.mode === 'local';
     S.myChar = LS.get('tt.char', null);
+    if (S.accountsMode) {
+      // nothing from whoever used this device before: the account decides (its profile follows once loaded)
+      S.me.nick = S.authUser.name;
+      S.me.color = colorFor(pk);
+      S.dm = !!S.authUser.dm;
+      S.myChar = null;
+    }
     if (S.server || S.p2p) S.canWrite = true; // everyone at a self-hosted or online table can play
     else if (S.mode === 'remote') {
       let cw = null;
@@ -3689,6 +3801,10 @@ const Store = (() => {
     return true;
   }
   function signOut() {
+    if (S.accountsMode && S.conn) {
+      ['tt.nick', 'tt.char', 'tt.role', 'tt.color'].forEach((k) => LS.set(k, null));
+      return S.conn.post('api/logout', {}).catch(() => {});
+    }
     LS.set('tt.acct', null);
     LS.set('tt.pk', uid('p')); // signed out: not the owner of anyone's heroes
     ['tt.nick', 'tt.char', 'tt.role'].forEach((k) => LS.set(k, null));
@@ -3697,6 +3813,18 @@ const Store = (() => {
     if (!PIN_RE.test(String(pin))) return Promise.reject(new Error('The PIN must be 4 to 6 digits.'));
     const salt = uid('s');
     return W.upd('accounts/' + id, { salt, hash: hashPin(String(pin), salt) });
+  }
+  // accounts mode: the table owner resets passwords and decides who is a DM (the server checks)
+  function adminResetPassword(id, password) {
+    if (String(password || '').length < 8) return Promise.reject(new Error('The password needs at least 8 characters.'));
+    return S.conn.post('api/admin/reset-password', { userId: id, password: String(password) }).catch((e) => {
+      throw new Error(e.message || 'That didn’t work.');
+    });
+  }
+  function adminSetDm(id, dm) {
+    return S.conn.post('api/admin/set-dm', { userId: id, dm: !!dm }).catch((e) => {
+      throw new Error(e.message || 'That didn’t work.');
+    });
   }
   function saveToAccount(patch) {
     if (!S.me.acct || !S.accounts.has(S.me.acct) || S.readOnly) return;
@@ -3995,7 +4123,7 @@ const Store = (() => {
       location.reload();
     },
     // accounts
-    createAccount, signIn, signOut, resetPin, accountName: (id) => ((S.accounts.get(id) || {}).name || ''),
+    createAccount, signIn, signOut, resetPin, adminResetPassword, adminSetDm, accountName: (id) => ((S.accounts.get(id) || {}).name || ''),
     monImg: (id) => {
       const a = id && S.art.get(id);
       if (a && a.img) return a.img;
@@ -4010,6 +4138,7 @@ const Store = (() => {
     // keeps ?broker=… so friends use the same lobby as the host
     inviteLink: () => (S.p2p ? location.origin + location.pathname + location.search + '#join=' + S.p2p.code : ''),
     setRole(dm) {
+      if (S.accountsMode) return; // the table owner decides who is a DM
       S.dm = !!dm;
       LS.set('tt.role', dm ? 'dm' : 'player');
       saveToAccount({ dm: dm ? 1 : 0 });
@@ -4152,6 +4281,13 @@ const Board = (() => {
       applyScene();
     });
     Store.on('maps', applyScene);
+    // the server refused a move: the token goes back where it is
+    Store.on('denied', (p) => {
+      if (typeof p === 'string' && p.startsWith('tokens/')) {
+        pendingMoves.delete(p.slice(7));
+        renderTokens();
+      }
+    });
     Store.on('tokens', () => {
       if (sel && !S.tokens.has(sel)) sel = null;
       renderTokens();
@@ -9063,12 +9199,12 @@ const UI = (() => {
           seen.add(k);
           people.push(p);
         });
-        const me = S.me.acct && S.accounts.get(S.me.acct);
+        const me = (S.me.acct && S.accounts.get(S.me.acct)) || (S.accountsMode ? { name: S.me.nick } : null);
         return html`<div class="card"><div class="card-title"><h3>Account</h3>${me ? html`<button type="button" class="btn btn-sm" data-act="signout">Sign out</button>` : html`<button type="button" class="btn btn-sm btn-primary" data-act="account">Sign in or create</button>`}</div>
-          <p class="prose" style="margin:0">${me ? html`Signed in as <b>${me.name}</b>. Your settings and heroes follow you to any device.` : 'Not signed in: settings stay on this device only.'}</p>
-          ${S.dm && S.accounts.size ? html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${[...S.accounts.entries()].map(([id, a]) => html`<div class="row"><span class="main"><span class="title" style="display:block">${a.name}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
+          <p class="prose" style="margin:0">${me ? html`Signed in as <b>${me.name}</b>. Your settings and heroes follow you to any device.${S.accountsMode ? ' Your name and color here are what others see; you sign in with the name you registered.' : ''}` : 'Not signed in: settings stay on this device only.'}</p>
+          ${S.accountsMode ? (S.me.isOwner ? accountsAdminHtml() : '') : S.dm && S.accounts.size ? html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${[...S.accounts.entries()].map(([id, a]) => html`<div class="row"><span class="main"><span class="title" style="display:block">${a.name}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
             <input type="password" id="rp-${id}" inputmode="numeric" maxlength="6" placeholder="New PIN" aria-label="New PIN for ${a.name}" style="width:110px"><button type="button" class="btn btn-sm" data-act="reset-pin" data-id="${id}">Reset PIN</button></div>`)}</div></div></details>` : ''}</div>
-          ${S.dm || S.mode === 'local' || (S.p2p && S.p2p.role === 'host') ? html`<div class="card"><div class="card-title"><h3>Backup</h3></div>
+          ${(S.accountsMode ? S.me.isOwner : S.dm || S.mode === 'local' || (S.p2p && S.p2p.role === 'host')) ? html`<div class="card"><div class="card-title"><h3>Backup</h3></div>
             <p class="hint">One file with the whole table: accounts, heroes, inventories, homebrew, campaigns, maps, tokens, fog and the dice log. Restore it here or on another device.</p>
             <div class="btn-row"><button type="button" class="btn btn-sm" data-act="backup">Download backup</button><button type="button" class="btn btn-sm" data-act="restore">Restore backup</button></div></div>` : ''}
           <div class="card"><div class="card-title"><h3>Campaign</h3>${S.p2p && S.p2p.role === 'guest' ? '' : html`<button type="button" class="btn btn-sm" data-act="campaigns">${icon('book')} Switch or start another</button>`}</div>
@@ -9076,7 +9212,7 @@ const UI = (() => {
           <div class="card"><div class="card-title"><h3>You</h3>${S.me.isOwner ? html`<span class="badge brass">Table owner</span>` : ''}</div>
           <label class="field"><span>Your name at the table</span><input type="text" id="pNick" value="${S.me.nick}" maxlength="40" placeholder="What friends call you" autocomplete="off"></label>
           <div class="field"><span>Your color</span><div class="swatches">${Store.PALETTE.map((col) => html`<button type="button" class="swatch" style="--c:${col}" data-act="pcol" data-c="${col}" aria-pressed="${S.me.color === col}" aria-label="Color ${col}"></button>`)}</div></div>
-          <div class="field"><span>Role on this device</span><div class="seg"><button type="button" data-act="role" data-r="player" aria-pressed="${!S.dm}">Player</button><button type="button" data-act="role" data-r="dm" aria-pressed="${S.dm}">Dungeon Master</button></div></div>
+          ${S.accountsMode ? html`<div class="field"><span>Role</span><p class="prose" style="margin:0">${S.dm ? 'Dungeon Master' : 'Player'} <span class="small muted">· the table owner decides who is a DM</span></p></div>` : html`<div class="field"><span>Role on this device</span><div class="seg"><button type="button" data-act="role" data-r="player" aria-pressed="${!S.dm}">Player</button><button type="button" data-act="role" data-r="dm" aria-pressed="${S.dm}">Dungeon Master</button></div></div>`}
           ${mine.length ? html`<label class="field"><span>Playing as</span><select id="pChar"><option value="">Nobody yet</option>${mine.map((c) => html`<option value="${c.id}" ${S.myChar === c.id ? 'selected' : ''}>${c.name}</option>`)}</select></label>` : ''}
           <button type="button" class="chip" data-act="names" aria-pressed="${!!showNames}">${showNames ? 'Token names always shown' : 'Token names on hover'}</button></div>
           <div class="card"><div class="card-title"><h3>At the table now</h3><span class="small muted">${people.length}</span></div>
@@ -9087,9 +9223,9 @@ const UI = (() => {
             })}</div>` : html`<p class="hint">${S.mode === 'local' ? 'Solo mode: this table is only on this device. Use Play online below to bring friends in.' : 'Only you for now.'}</p>`}</div>
           ${onlineCard()}
           ${S.p2p || S.mode === 'local' ? '' : S.server ? html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
-            <p class="prose">Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.</p>
+            <p class="prose">${S.accountsMode ? 'Send friends this address. Each friend creates their own account with a name and password; players move their own heroes and tokens, and the table owner decides who is a DM.' : 'Send friends this address and the table password. Everyone who has both can move tokens, roll and edit heroes.'}</p>
             <input type="text" readonly value="${location.origin + location.pathname}" aria-label="Table address" onfocus="this.select()">
-            <p class="hint">${S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
+            <p class="hint">${S.accountsMode ? 'Anyone who can open this address can create an account, so only share it with your group.' : S.me.isOwner ? 'This computer is running the table. Keep the server window open while you play; closing it ends the game for everyone (nothing is lost, just start it again).' : 'The table runs on the DM’s computer. If it stops, your screen says Reconnecting… until it is back.'}</p></div>` : html`<div class="card"><div class="card-title"><h3>Invite friends</h3></div>
             <p class="prose">Share this page from its share menu with each friend’s email and give them edit access (Editor), so they can move tokens and roll. Keep the public link off, since edit access for invited friends only holds while the page isn’t shared by link. Each friend signs in with their own Claude account.</p>
             <p class="hint">Friends with view-only access can still watch the table live. While your page is open, their own moves and rolls are passed through it when possible.</p></div>`}
           ${S.dm ? html`<div class="card"><div class="card-title"><h3>DM tools</h3></div><div class="btn-row"><button type="button" class="btn btn-sm" data-act="scenes">${icon('map')} Scenes and maps</button><button type="button" class="btn btn-danger btn-sm" data-act="clear-log">Clear dice log</button></div></div>` : ''}
@@ -9112,10 +9248,15 @@ const UI = (() => {
         if (a === 'scenes') return openScenes();
         if (a === 'campaigns') return openCampaigns();
         if (a === 'account') return openAccount();
-        if (a === 'signout') {
-          Store.signOut();
-          return location.reload();
+        if (a === 'signout') return Promise.resolve(Store.signOut()).then(() => location.reload());
+        if (a === 'reset-pw') {
+          const inp = document.getElementById('rp-' + b.dataset.id);
+          return Store.adminResetPassword(b.dataset.id, inp && inp.value).then(() => {
+            if (inp) inp.value = '';
+            toast('Password reset. Tell them the new one.');
+          }).catch((er) => toast(er.message, 'warn'));
         }
+        if (a === 'set-dm') return Store.adminSetDm(b.dataset.id, b.dataset.dm === '1').then(() => toast(b.dataset.dm === '1' ? 'They’re a DM now.' : 'They’re a player now.')).catch((er) => toast(er.message, 'warn'));
         if (a === 'reset-pin') {
           const inp = document.getElementById('rp-' + b.dataset.id);
           return Store.resetPin(b.dataset.id, inp && inp.value).then(() => toast('PIN reset. Tell them the new one.')).catch((er) => toast(er.message, 'warn'));
@@ -9157,6 +9298,14 @@ const UI = (() => {
     });
   }
   let showNames = Store.LS.get('tt.names', false);
+  // accounts mode: the table owner's list of accounts (passwords and DM rights live on the server)
+  function accountsAdminHtml() {
+    if (!S.accounts.size) return '';
+    const list = [...S.accounts.entries()].sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
+    return html`<details class="fold"><summary>Accounts at this table <span class="small muted">${S.accounts.size}</span></summary><div class="fold-in"><div class="list">${list.map(([id, a]) => html`<div class="row" style="flex-wrap:wrap"><span class="main"><span class="title" style="display:block">${a.name}${id === S.me.acct ? ' (you)' : ''}</span><span class="sub" style="display:block">${plural([...S.chars.values()].filter((c) => c.owner === id).length, 'hero')}${a.dm ? ' · DM' : ''}</span></span>
+      <button type="button" class="btn btn-sm" data-act="set-dm" data-id="${id}" data-dm="${a.dm ? '0' : '1'}">${a.dm ? 'Make player' : 'Make DM'}</button>
+      <input type="password" id="rp-${id}" minlength="8" maxlength="200" autocomplete="new-password" placeholder="New password" aria-label="New password for ${a.name}" style="width:140px"><button type="button" class="btn btn-sm" data-act="reset-pw" data-id="${id}">Reset password</button></div>`)}</div></div></details>`;
+  }
 
   function openAccount() {
     const st = { err: '', busy: false, pick: '' };
@@ -9321,6 +9470,7 @@ const UI = (() => {
     renderTop();
     renderTabs();
     // everyone signs in once per device (automated test browsers skip this unless the address has ?acct)
+    if (S.accountsMode) return; // signed in on the server already, with a name
     const testSkip = navigator.webdriver && !/[?&]acct\b/.test(location.search);
     const wantAcct = () => S.loaded && !S.me.acct && !testSkip;
     if (wantAcct()) setTimeout(openAccount, 300);
