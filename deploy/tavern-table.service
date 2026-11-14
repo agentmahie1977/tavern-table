@@ -7,7 +7,7 @@ Type=simple
 User=tavern
 Group=tavern
 WorkingDirectory=/opt/tavern-table
-ExecStart=/usr/bin/node server.js --accounts --trust-proxy --port 8080 --data /var/lib/tavern-table
+ExecStart=/usr/bin/node server.js --accounts --trust-proxy --host 127.0.0.1 --port 8080 --data /var/lib/tavern-table
 Restart=always
 RestartSec=3
 
